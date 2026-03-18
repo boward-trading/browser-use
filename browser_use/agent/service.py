@@ -2480,6 +2480,20 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			# been skipped or returned early due to the cancellation.
 			if self.state.n_steps == step + 1:
 				self.state.n_steps += 1
+			self.history.add_item(
+				AgentHistory(
+					model_output=None,
+					result=[ActionResult(error=error_msg, include_in_memory=True)],
+					state=BrowserStateHistory(
+						url='',
+						title='',
+						tabs=[],
+						interacted_element=[],
+						screenshot_path=None,
+					),
+					metadata=None,
+				)
+			)
 
 		if on_step_end is not None:
 			await on_step_end(self)
