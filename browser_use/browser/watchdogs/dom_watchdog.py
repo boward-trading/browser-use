@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from browser_use.browser.events import (
 	BrowserErrorEvent,
@@ -798,6 +798,16 @@ class DOMWatchdog(BaseWatchdog):
 		pixels_left = scroll_x
 		pixels_right = max(0, page_width - viewport_width - scroll_x)
 
+		# If CDP reports no scroll content but the DOM tree has a custom
+		# scrollable container (e.g. Microsoft Sway), use the container's
+		# scroll metrics instead.
+		if pixels_below < viewport_height and self.enhanced_dom_tree is not None:
+			container_scroll = self._find_primary_scroll_container()
+			if container_scroll and container_scroll['content_below'] > pixels_below:
+				pixels_above = int(container_scroll['content_above'])
+				pixels_below = int(container_scroll['content_below'])
+				page_height = int(container_scroll['scrollable_height'])
+
 		page_info = PageInfo(
 			viewport_width=viewport_width,
 			viewport_height=viewport_height,
@@ -812,6 +822,21 @@ class DOMWatchdog(BaseWatchdog):
 		)
 
 		return page_info
+
+	def _find_primary_scroll_container(self) -> dict[str, Any] | None:
+		"""Walk the enhanced DOM tree to find the scrollable container with the most content below."""
+		best: dict[str, Any] | None = None
+
+		def _walk(node: 'EnhancedDOMTreeNode') -> None:
+			nonlocal best
+			info = node.scroll_info
+			if info and (best is None or info['content_below'] > best['content_below']):
+				best = info
+			for child in (node.children_nodes or []):
+				_walk(child)
+
+		_walk(self.enhanced_dom_tree)
+		return best
 
 	# ========== Public Helper Methods ==========
 

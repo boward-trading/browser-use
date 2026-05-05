@@ -950,6 +950,40 @@ class Tools(Generic[Context]):
 				)
 
 		@self.registry.action(
+			'Extract all visible text from the current page as plain text. '
+			'Much faster than extract (~1s vs ~60s) but returns raw unstructured text. '
+			'Use this when you need the full text content of a page (articles, newsletters, etc). '
+			'For structured data extraction (JSON schemas, specific fields), use extract instead.',
+		)
+		async def extract_text(browser_session: BrowserSession):
+			cdp_session = await browser_session.get_or_create_cdp_session()
+			js_code = """(() => {
+				let best = document.body, bestH = 0;
+				for (const el of document.querySelectorAll('*')) {
+					if (el.scrollHeight > el.clientHeight + 10) {
+						const s = getComputedStyle(el);
+						if (['auto','scroll','overlay'].includes(s.overflowY) && el.scrollHeight > bestH) {
+							best = el; bestH = el.scrollHeight;
+						}
+					}
+				}
+				return best.innerText;
+			})()"""
+			result = await cdp_session.cdp_client.send.Runtime.evaluate(
+				params={'expression': js_code, 'returnByValue': True, 'awaitPromise': False},
+				session_id=cdp_session.session_id,
+			)
+			text = result.get('result', {}).get('value', '')
+			if not text:
+				return ActionResult(error='No text content found on page')
+			MAX_CHARS = 100000
+			truncated = len(text) > MAX_CHARS
+			if truncated:
+				text = text[:MAX_CHARS]
+			msg = f'Page text ({len(text):,} chars)' + (' [truncated]' if truncated else '')
+			return ActionResult(extracted_content=f'{msg}:\n\n{text}', long_term_memory=f'{msg}:\n\n{text}')
+
+		@self.registry.action(
 			"""LLM extracts structured data from page markdown. Use when: on right page, know what to extract, haven't called before on same page+query. Can't get interactive elements. Set extract_links=True for URLs. Set extract_images=True for image src URLs. Use start_from_char if previous extraction was truncated to extract data further down the page. When paginating across pages, pass already_collected with item identifiers (names/URLs) from prior pages to avoid duplicates.""",
 			param_model=ExtractAction,
 		)
@@ -1267,6 +1301,13 @@ You will be given a query and the markdown of a webpage that has been filtered t
 		)
 		async def scroll(params: ScrollAction, browser_session: BrowserSession):
 			try:
+				# Clamp pages to valid range - LLMs sometimes ignore schema constraints
+				if params.pages > 10.0:
+					logger.warning(f'Clamping scroll pages from {params.pages} to 10.0')
+					params.pages = 10.0
+				elif params.pages < 0.1:
+					params.pages = 0.1
+
 				# Look up the node from the selector map if index is provided
 				# Special case: index 0 means scroll the whole page (root/body element)
 				node = None
@@ -1296,6 +1337,9 @@ You will be given a query and the markdown of a webpage that has been filtered t
 				except Exception as e:
 					viewport_height = 1000  # Fallback to 1000px
 					logger.debug(f'Failed to get viewport height, using fallback 1000px: {e}')
+
+				# Clamp pages to safe range in case validation is bypassed
+				params.pages = max(0.1, min(params.pages, 10.0))
 
 				# For multiple pages (>=1.0), scroll one page at a time to ensure each scroll completes
 				if params.pages >= 1.0:
@@ -1643,9 +1687,38 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			return ActionResult(extracted_content=result, long_term_memory=result)
 
 		@self.registry.action(
+			'Append content to an existing file. Creates the file if it does not exist.'
+		)
+		async def append_file(file_name: str, content: str, file_system: FileSystem):
+			result = await file_system.append_file(file_name, content + '\n')
+			resolved_name, _ = file_system._resolve_filename(file_name)
+			file_path = file_system.get_dir() / resolved_name
+			logger.info(f'💾 {result} File location: {file_path}')
+			return ActionResult(extracted_content=result, long_term_memory=result)
+
+		@self.registry.action(
 			'Replace specific text within a file by searching for old_str and replacing with new_str. Use this for targeted edits like updating todo checkboxes or modifying specific lines without rewriting the entire file.'
 		)
-		async def replace_file(file_name: str, old_str: str, new_str: str, file_system: FileSystem):
+		async def replace_file(
+			file_name: str,
+			file_system: FileSystem,
+			old_str: str | None = None,
+			new_str: str | None = None,
+			content: str | None = None,
+		):
+			# LLMs sometimes confuse replace_file with write_file by sending
+			# {file_name, content} instead of {file_name, old_str, new_str}.
+			# Auto-correct by treating it as a full file write.
+			if content is not None and old_str is None and new_str is None:
+				result = await file_system.write_file(file_name, content + '\n')
+				resolved_name, _ = file_system._resolve_filename(file_name)
+				file_path = file_system.get_dir() / resolved_name
+				logger.info(f'💾 (auto-corrected replace_file→write_file) {result} File location: {file_path}')
+				return ActionResult(extracted_content=result, long_term_memory=result)
+
+			if old_str is None or new_str is None:
+				return ActionResult(error='replace_file requires both old_str and new_str (or content for a full overwrite)')
+
 			result = await file_system.replace_file_str(file_name, old_str, new_str)
 			logger.info(f'💾 {result}')
 			return ActionResult(extracted_content=result, long_term_memory=result)
