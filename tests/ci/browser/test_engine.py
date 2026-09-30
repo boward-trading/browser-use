@@ -208,3 +208,95 @@ def test_bidi_connection_needs_one_of_browser_context_or_ws_endpoint():
 
 	with pytest.raises(ValueError, match='ws_endpoint'):
 		BidiBrowserConnection()
+
+
+# ── camoufox_options has to survive a BrowserProfile round-trip ───────────────
+
+
+def _pinned_fingerprint_dict():
+	"""A camoufox fingerprint in the JSON form its own `dumps()` produces."""
+	import json
+
+	from camoufox.fingerprints import generate_fingerprint
+
+	return json.loads(generate_fingerprint().dumps())
+
+
+def test_a_fingerprint_dict_is_rebuilt_for_camoufox():
+	"""camoufox needs a Fingerprint dataclass; the profile can only carry plain data.
+
+	BrowserSession merges a profile by way of `model_dump()`
+	(`session.py`: `{**browser_profile.model_dump(exclude_unset=True), ...}`), which
+	flattens any dataclass in `camoufox_options` into a dict. camoufox then calls
+	`asdict()` on it and raises. So the serialisable form is what crosses the
+	profile, and the engine rebuilds it at the camoufox boundary.
+	"""
+	import dataclasses
+
+	profile = BrowserProfile(
+		browser_type=BrowserType.FIREFOX,
+		headless=True,
+		camoufox_options={'fingerprint': _pinned_fingerprint_dict()},
+	)
+	rebuilt = FirefoxPlaywrightEngine.build_launch_kwargs(profile)['fingerprint']
+
+	assert dataclasses.is_dataclass(rebuilt) and not isinstance(rebuilt, type)
+	assert 'firefox' in rebuilt.navigator.userAgent.lower()
+	# Nested dataclasses must be rebuilt too, or asdict() produces junk.
+	assert dataclasses.is_dataclass(rebuilt.screen) and not isinstance(rebuilt.screen, type)
+
+
+def test_an_already_built_fingerprint_is_left_alone():
+	from camoufox.fingerprints import generate_fingerprint
+
+	fingerprint = generate_fingerprint()
+	profile = BrowserProfile(
+		browser_type=BrowserType.FIREFOX,
+		headless=True,
+		camoufox_options={'fingerprint': fingerprint},
+	)
+	assert FirefoxPlaywrightEngine.build_launch_kwargs(profile)['fingerprint'] is fingerprint
+
+
+def test_camoufox_options_survive_the_profile_merge():
+	"""The exact round-trip BrowserSession performs must not break the identity."""
+	import dataclasses
+
+	original = BrowserProfile(
+		browser_type=BrowserType.FIREFOX,
+		headless=True,
+		camoufox_options={'fingerprint': _pinned_fingerprint_dict(), 'humanize': True},
+	)
+	# What BrowserSession.__init__ does to a profile handed to it.
+	merged = BrowserProfile(**original.model_dump(exclude_unset=True))
+
+	kwargs = FirefoxPlaywrightEngine.build_launch_kwargs(merged)
+	assert dataclasses.is_dataclass(kwargs['fingerprint']) and not isinstance(kwargs['fingerprint'], type)
+	assert kwargs['humanize'] is True
+
+
+async def test_launch_local_accepts_a_pinned_fingerprint(tmp_path):
+	"""The whole point: launch Camoufox with a caller-supplied identity."""
+	pytest.importorskip('camoufox')
+
+	profile = BrowserProfile(
+		browser_type=BrowserType.FIREFOX,
+		headless=True,
+		user_data_dir=str(tmp_path / 'camoufox-profile'),
+		camoufox_options={
+			'fingerprint': _pinned_fingerprint_dict(),
+			# Acknowledges camoufox's LeakWarning about supplying our own
+			# fingerprint — reusing one is the point.
+			'i_know_what_im_doing': True,
+		},
+	)
+	try:
+		handle = await FirefoxPlaywrightEngine.launch_local(profile)
+	except Exception as e:  # noqa: BLE001
+		pytest.skip(f'camoufox could not launch: {e}')
+	try:
+		page = handle['context'].pages[0] if handle['context'].pages else await handle['context'].new_page()
+		await page.goto('data:text/html,<title>pinned</title>')
+		assert await page.title() == 'pinned'
+	finally:
+		await handle['teardown']()

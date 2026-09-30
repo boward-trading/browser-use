@@ -44,8 +44,10 @@ Quick local test:
 
 from __future__ import annotations
 
+import dataclasses
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, get_type_hints
 
 import psutil
 
@@ -104,6 +106,44 @@ class ChromiumCdpEngine(BrowserEngine):
 
 	async def launch(self, watchdog: LocalBrowserWatchdog) -> tuple[psutil.Process, str]:
 		return await watchdog._launch_browser()
+
+
+def _rebuild_dataclass(cls: Any, data: Mapping[str, Any]) -> Any:
+	"""Rebuild a (possibly nested) dataclass from its ``asdict``/JSON form."""
+	# `field.type` is a string when the defining module uses postponed annotations,
+	# so resolve the real types once rather than string-matching them.
+	try:
+		hints = get_type_hints(cls)
+	except Exception:  # noqa: BLE001 — unresolvable hints just mean no nesting
+		hints = {}
+
+	kwargs: dict[str, Any] = {}
+	for field in dataclasses.fields(cls):
+		value = data.get(field.name)
+		field_type = hints.get(field.name, field.type)
+		if isinstance(value, Mapping) and dataclasses.is_dataclass(field_type):
+			value = _rebuild_dataclass(field_type, value)
+		kwargs[field.name] = value
+	return cls(**kwargs)
+
+
+def _as_camoufox_fingerprint(value: Any) -> Any:
+	"""Coerce a serialised fingerprint back into camoufox's dataclass.
+
+	camoufox calls ``dataclasses.asdict()`` on whatever it is given, so it needs a
+	real ``browserforge.fingerprints.Fingerprint``. A caller cannot hand one over
+	through :class:`~browser_use.browser.profile.BrowserProfile` though:
+	:class:`~browser_use.browser.session.BrowserSession` merges a profile via
+	``model_dump()``, which flattens any dataclass into a plain dict. So the
+	serialisable form is what crosses the profile boundary and gets rebuilt here.
+
+	An already-built Fingerprint passes through untouched.
+	"""
+	if not isinstance(value, Mapping):
+		return value
+	from browserforge.fingerprints import Fingerprint
+
+	return _rebuild_dataclass(Fingerprint, value)
 
 
 class FirefoxPlaywrightEngine(BrowserEngine):
@@ -194,6 +234,8 @@ class FirefoxPlaywrightEngine(BrowserEngine):
 				kwargs['proxy'] = proxy_dict
 
 		kwargs.update(profile.camoufox_options or {})
+		if 'fingerprint' in kwargs:
+			kwargs['fingerprint'] = _as_camoufox_fingerprint(kwargs['fingerprint'])
 		return kwargs
 
 	@staticmethod

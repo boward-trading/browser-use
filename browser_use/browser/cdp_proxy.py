@@ -208,7 +208,9 @@ class BidiCdpProxy(CDPClient):
 		if handler is None:
 			raise CdpMethodNotImplemented(
 				f'BidiCdpProxy: no Playwright translation for CDP method {method!r} yet. '
-				f'Implement it in cdp_proxy._HANDLERS (params={params!r}).'
+				f'Either implement it in cdp_proxy._HANDLERS, or run this task on Chromium '
+				f'(browser_type="chromium", or --browser-type chromium from the CLI), where '
+				f'the real CDP method is available. (params={params!r})'
 			)
 		return await handler(self, params or {}, session_id)
 
