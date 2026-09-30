@@ -10,6 +10,7 @@ so the suite stays green on a CDP-only environment.
 
 import pytest
 
+from browser_use.browser.events import ClickElementEvent, TypeTextEvent
 from browser_use.browser.profile import BrowserProfile
 from browser_use.browser.session import BrowserSession
 
@@ -105,3 +106,34 @@ async def test_screenshot_comes_back_through_the_watchdog(bidi_session, httpserv
 	png = base64.b64decode(state.screenshot)
 	assert png.startswith(b'\x89PNG\r\n\x1a\n'), 'screenshot is not a PNG'
 	assert len(png) > 1000
+
+
+async def test_click_and_type_reach_the_page(bidi_session, httpserver):
+	"""ACT: DefaultActionWatchdog's BiDi branch types and clicks for real.
+
+	The button's own onclick writes what it saw into the page, so a passing
+	assertion means both actions genuinely landed — not merely that the events
+	resolved without raising.
+	"""
+	httpserver.expect_request('/form').respond_with_data(
+		'<html><body>'
+		'<input id="q" type="text">'
+		'<button id="go" onclick="document.getElementById(\'out\').textContent='
+		"'clicked:'+document.getElementById('q').value\">Go</button>"
+		'<div id="out">nothing</div>'
+		'</body></html>',
+		content_type='text/html',
+	)
+	await bidi_session.navigate_to(httpserver.url_for('/form'))
+
+	state = await bidi_session.get_browser_state_summary()
+	by_tag = {n.tag_name.lower(): n for n in (state.dom_state.selector_map or {}).values() if n.tag_name}
+	assert 'input' in by_tag and 'button' in by_tag, f'expected a form to index, got {sorted(by_tag)}'
+
+	await bidi_session.event_bus.dispatch(TypeTextEvent(node=by_tag['input'], text='hello'))
+	await bidi_session.event_bus.dispatch(ClickElementEvent(node=by_tag['button']))
+
+	result = await bidi_session.cdp_client.send.Runtime.evaluate(
+		params={'expression': "document.getElementById('out').textContent", 'returnByValue': True}
+	)
+	assert result.get('result', {}).get('value') == 'clicked:hello'
