@@ -323,8 +323,26 @@ class BrowserChannel(str, Enum):
 	MSEDGE_CANARY = 'msedge-canary'
 
 
+class BrowserType(str, Enum):
+	"""Underlying browser engine. Selects the protocol/control path.
+
+	CHROMIUM drives Chrome / Chromium / Edge variants via raw CDP (the
+	cdp_use library). All channels in :class:`BrowserChannel` belong to
+	this engine.
+
+	FIREFOX targets the Firefox family — stock Firefox or anti-detect
+	builds like Camoufox — over WebDriver BiDi via Playwright. Firefox
+	does not speak CDP, so launch and session bring-up dispatch on
+	``browser_type``; see :mod:`browser_use.browser.engine`.
+	"""
+
+	CHROMIUM = 'chromium'
+	FIREFOX = 'firefox'
+
+
 # Using constants from central location in browser_use.config
 BROWSERUSE_DEFAULT_CHANNEL = BrowserChannel.CHROMIUM
+BROWSERUSE_DEFAULT_BROWSER_TYPE = BrowserType.CHROMIUM
 
 
 # ===== Type definitions with validators =====
@@ -433,6 +451,16 @@ class BrowserLaunchArgs(BaseModel):
 		description='List of default CLI args to stop playwright from applying (see https://github.com/microsoft/playwright/blob/41008eeddd020e2dee1c540f7c0cdfa337e99637/packages/playwright-core/src/server/chromium/chromiumSwitches.ts)',
 	)
 	channel: BrowserChannel | None = None  # https://playwright.dev/docs/browsers#chromium-headless-shell
+	browser_type: BrowserType = Field(
+		default=BROWSERUSE_DEFAULT_BROWSER_TYPE,
+		description=(
+			'Underlying browser engine. CHROMIUM uses the CDP-driven launch/session path '
+			'(`channel` above selects the Chromium variant). FIREFOX selects the Playwright '
+			'Firefox engine — for stock Firefox or anti-detect builds like Camoufox; point '
+			'`executable_path` at the Camoufox binary, or leave it unset to let the camoufox '
+			'package resolve its own fetched binary.'
+		),
+	)
 	chromium_sandbox: bool = Field(
 		default=not CONFIG.IN_DOCKER, description='Whether to enable Chromium sandboxing (recommended unless inside Docker).'
 	)
@@ -458,6 +486,21 @@ class BrowserLaunchArgs(BaseModel):
 	def validate_devtools_headless(self) -> Self:
 		"""Cannot open devtools when headless is True"""
 		assert not (self.headless and self.devtools), 'headless=True and devtools=True cannot both be set at the same time'
+		return self
+
+	@model_validator(mode='after')
+	def validate_channel_consistent_with_browser_type(self) -> Self:
+		"""`channel` names a Chromium variant, so it cannot describe a Firefox engine.
+
+		Rejected rather than ignored: silently dropping one of the two would
+		launch a browser the caller did not ask for.
+		"""
+		if self.browser_type == BrowserType.FIREFOX and self.channel is not None:
+			raise ValueError(
+				f'channel={self.channel.value!r} is Chromium-only and incompatible with '
+				f'browser_type=firefox. Drop `channel` — Firefox variants are selected via '
+				f'`executable_path` (e.g. the Camoufox binary).'
+			)
 		return self
 
 	@model_validator(mode='after')
