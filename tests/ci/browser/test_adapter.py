@@ -20,6 +20,7 @@ checks below already lock the surface.
 from __future__ import annotations
 
 import inspect
+
 import pytest
 
 from browser_use.browser.adapter import (
@@ -27,7 +28,6 @@ from browser_use.browser.adapter import (
 	CdpBrowserAdapter,
 	PlaywrightBrowserAdapter,
 )
-
 
 # ── ABC contract ────────────────────────────────────────────────────────────
 
@@ -45,24 +45,20 @@ def test_concrete_adapters_implement_every_abstract_method() -> None:
 	makes the abstraction load-bearing — consumers should never need
 	to check the adapter's type before calling a method."""
 	abstract_methods = {
-		name for name, method in BrowserAdapter.__dict__.items()
-		if getattr(method, '__isabstractmethod__', False)
+		name for name, method in BrowserAdapter.__dict__.items() if getattr(method, '__isabstractmethod__', False)
 	}
 	assert abstract_methods, 'BrowserAdapter should have abstract methods'
 
 	for adapter_cls in (CdpBrowserAdapter, PlaywrightBrowserAdapter):
 		assert not adapter_cls.__abstractmethods__, (
-			f'{adapter_cls.__name__} is missing concrete impls for '
-			f'{adapter_cls.__abstractmethods__}'
+			f'{adapter_cls.__name__} is missing concrete impls for {adapter_cls.__abstractmethods__}'
 		)
 		# Belt-and-braces: every abstract name must resolve to a real
 		# coroutine function on the subclass.
 		for name in abstract_methods:
 			fn = getattr(adapter_cls, name, None)
 			assert fn is not None, f'{adapter_cls.__name__} is missing {name}'
-			assert inspect.iscoroutinefunction(fn), (
-				f'{adapter_cls.__name__}.{name} should be `async def`'
-			)
+			assert inspect.iscoroutinefunction(fn), f'{adapter_cls.__name__}.{name} should be `async def`'
 
 
 def test_concrete_adapter_signatures_match_abc() -> None:
@@ -170,8 +166,7 @@ async def test_playwright_adapter_locator(playwright_page, httpserver) -> None:
 
 
 async def test_playwright_adapter_evaluate(playwright_page, httpserver) -> None:
-	httpserver.expect_request('/blank').respond_with_data('<html><body></body></html>',
-	                                                       content_type='text/html')
+	httpserver.expect_request('/blank').respond_with_data('<html><body></body></html>', content_type='text/html')
 	adapter = PlaywrightBrowserAdapter(playwright_page)
 	await adapter.goto(httpserver.url_for('/blank'))
 	assert await adapter.evaluate('1 + 1') == 2
@@ -190,11 +185,7 @@ async def test_playwright_adapter_has_no_accessibility_tree(playwright_page, htt
 	elements from the DOM + snapshot path, not from here.
 	"""
 	httpserver.expect_request('/page').respond_with_data(
-		'<html><body>'
-		'<h1>Hello</h1>'
-		'<button>Click me</button>'
-		'<a href="#x">link</a>'
-		'</body></html>',
+		'<html><body><h1>Hello</h1><button>Click me</button><a href="#x">link</a></body></html>',
 		content_type='text/html',
 	)
 	adapter = PlaywrightBrowserAdapter(playwright_page)
@@ -227,12 +218,11 @@ async def test_playwright_adapter_viewport_metrics(playwright_page, httpserver) 
 
 	vm = await adapter.viewport_metrics()
 	# Contract: every key in the docstring is present and an int / float.
-	for key in ('width', 'height', 'scroll_x', 'scroll_y',
-	            'document_width', 'document_height', 'device_pixel_ratio'):
+	for key in ('width', 'height', 'scroll_x', 'scroll_y', 'document_width', 'document_height', 'device_pixel_ratio'):
 		assert key in vm, f'viewport_metrics missing {key!r}'
-	assert vm['width']  > 0
+	assert vm['width'] > 0
 	assert vm['height'] > 0
 	# document_* must reflect the oversized body we served.
-	assert vm['document_width']  >= 3000
+	assert vm['document_width'] >= 3000
 	assert vm['document_height'] >= 4000
 	assert vm['device_pixel_ratio'] == dpr

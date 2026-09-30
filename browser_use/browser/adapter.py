@@ -21,7 +21,7 @@ ship with this module:
     is intentionally modelled on Playwright's Page API. This is the
     path for Firefox / Camoufox.
 
-See ``docs/ADAPTERS.md`` for the conventions when writing a third backend.
+See ``ADAPTERS.md`` for the conventions when writing a third backend.
 
 Note on scope: this module is **operations only** — how you control a
 page, not how you launched it. The launch path lives in
@@ -33,16 +33,15 @@ from __future__ import annotations
 import base64
 import json
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Literal
-
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
-	from browser_use.browser.session import BrowserSession
+	# Type-checking only, so these imports never run — playwright stays an
+	# optional dependency (a try/except fallback here would make the name a
+	# variable, which is not usable in an annotation).
+	from playwright.async_api import Page as PlaywrightPage
 
-	try:
-		from playwright.async_api import Page as PlaywrightPage
-	except ImportError:  # pragma: no cover — playwright is optional
-		PlaywrightPage = Any  # type: ignore
+	from browser_use.browser.session import BrowserSession
 
 
 # ── ABC ──────────────────────────────────────────────────────────────────────
@@ -73,8 +72,7 @@ class BrowserAdapter(ABC):
 	# ── Navigation ──
 
 	@abstractmethod
-	async def goto(self, url: str, *, wait_until: str = 'load',
-	               timeout_ms: int = 30_000) -> dict[str, Any]:
+	async def goto(self, url: str, *, wait_until: str = 'load', timeout_ms: int = 30_000) -> dict[str, Any]:
 		"""Navigate to ``url``. ``wait_until`` mirrors Playwright's
 		``"load" | "domcontentloaded" | "networkidle" | "commit"``.
 
@@ -85,8 +83,7 @@ class BrowserAdapter(ABC):
 		"""
 
 	@abstractmethod
-	async def reload(self, *, wait_until: str = 'load',
-	                 timeout_ms: int = 30_000) -> None: ...
+	async def reload(self, *, wait_until: str = 'load', timeout_ms: int = 30_000) -> None: ...
 
 	@abstractmethod
 	async def url(self) -> str:
@@ -97,8 +94,7 @@ class BrowserAdapter(ABC):
 		"""Current ``document.title``."""
 
 	@abstractmethod
-	async def wait_for_load_state(self, state: str = 'load',
-	                              *, timeout_ms: int = 30_000) -> None: ...
+	async def wait_for_load_state(self, state: str = 'load', *, timeout_ms: int = 30_000) -> None: ...
 
 	# ── Content + script ──
 
@@ -121,21 +117,17 @@ class BrowserAdapter(ABC):
 		"""Number of elements matching ``css_selector``. 0 if none."""
 
 	@abstractmethod
-	async def locator_inner_text(self, css_selector: str, *,
-	                             timeout_ms: int = 2_000) -> str:
+	async def locator_inner_text(self, css_selector: str, *, timeout_ms: int = 2_000) -> str:
 		"""``innerText`` of the first matching element. Raises if zero
 		matches before ``timeout_ms``."""
 
 	@abstractmethod
-	async def locator_get_attribute(self, css_selector: str,
-	                                attribute: str, *,
-	                                timeout_ms: int = 2_000) -> str | None:
+	async def locator_get_attribute(self, css_selector: str, attribute: str, *, timeout_ms: int = 2_000) -> str | None:
 		"""Attribute value of the first matching element, or ``None`` if
 		the attribute is absent. Raises if zero matches."""
 
 	@abstractmethod
-	async def locator_is_visible(self, css_selector: str, *,
-	                             timeout_ms: int = 2_000) -> bool:
+	async def locator_is_visible(self, css_selector: str, *, timeout_ms: int = 2_000) -> bool:
 		"""``True`` if the first matching element is visually rendered
 		(non-zero box, not ``display: none`` / ``visibility: hidden``).
 		``False`` if zero matches or hidden."""
@@ -143,31 +135,25 @@ class BrowserAdapter(ABC):
 	# ── Element actions ──
 
 	@abstractmethod
-	async def click(self, css_selector: str, *,
-	                timeout_ms: int = 5_000) -> None: ...
+	async def click(self, css_selector: str, *, timeout_ms: int = 5_000) -> None: ...
 
 	@abstractmethod
-	async def fill(self, css_selector: str, value: str, *,
-	               timeout_ms: int = 5_000) -> None:
+	async def fill(self, css_selector: str, value: str, *, timeout_ms: int = 5_000) -> None:
 		"""Clear the input and type ``value`` into it (Playwright's
 		``fill`` semantics — atomic, no per-keystroke listeners fire)."""
 
 	@abstractmethod
-	async def press(self, css_selector: str, key: str, *,
-	                timeout_ms: int = 5_000) -> None:
+	async def press(self, css_selector: str, key: str, *, timeout_ms: int = 5_000) -> None:
 		"""Press a key on the focused element (Playwright key names:
 		``"Enter"``, ``"Escape"``, ``"ArrowDown"``, …)."""
 
 	@abstractmethod
-	async def hover(self, css_selector: str, *,
-	                timeout_ms: int = 5_000) -> None: ...
+	async def hover(self, css_selector: str, *, timeout_ms: int = 5_000) -> None: ...
 
 	# ── Waiting ──
 
 	@abstractmethod
-	async def wait_for_selector(self, css_selector: str, *,
-	                            state: str = 'visible',
-	                            timeout_ms: int = 30_000) -> None:
+	async def wait_for_selector(self, css_selector: str, *, state: str = 'visible', timeout_ms: int = 30_000) -> None:
 		"""Block until at least one element matches and is in ``state``
 		(``"attached" | "detached" | "visible" | "hidden"``)."""
 
@@ -192,13 +178,13 @@ class BrowserAdapter(ABC):
 		with at least::
 
 		    {
-		      'width':       int,    # CSS px — visual viewport width
-		      'height':      int,    # CSS px — visual viewport height
-		      'scroll_x':    int,    # CSS px — horizontal scroll offset
-		      'scroll_y':    int,    # CSS px — vertical scroll offset
-		      'document_width':  int,
-		      'document_height': int,
-		      'device_pixel_ratio': float,
+		        'width': int,  # CSS px — visual viewport width
+		        'height': int,  # CSS px — visual viewport height
+		        'scroll_x': int,  # CSS px — horizontal scroll offset
+		        'scroll_y': int,  # CSS px — vertical scroll offset
+		        'document_width': int,
+		        'document_height': int,
+		        'device_pixel_ratio': float,
 		    }
 
 		Backends MAY include additional keys (CDP's getLayoutMetrics
@@ -208,14 +194,12 @@ class BrowserAdapter(ABC):
 	# ── Media ──
 
 	@abstractmethod
-	async def screenshot(self, *, full_page: bool = False,
-	                     fmt: Literal['png', 'jpeg'] = 'png') -> bytes: ...
+	async def screenshot(self, *, full_page: bool = False, fmt: Literal['png', 'jpeg'] = 'png') -> bytes: ...
 
 	# ── Accessibility ──
 
 	@abstractmethod
-	async def accessibility_snapshot(self, *,
-	                                 interesting_only: bool = True) -> dict | None:
+	async def accessibility_snapshot(self, *, interesting_only: bool = True) -> dict | None:
 		"""Cross-browser accessibility tree snapshot. The CDP backend
 		synthesises it from ``Accessibility.getFullAXTree``. Returns
 		``None`` if the backend can't produce one, and raises
@@ -279,45 +263,54 @@ class CdpBrowserAdapter(BrowserAdapter):
 	choose to use the adapter incrementally.
 	"""
 
-	def __init__(self, session: BrowserSession,
-	             cdp_session_id: str | None = None) -> None:
-		"""Wrap a BrowserSession. When ``cdp_session_id`` is provided every
-		CDP call routes to that specific target (tab/iframe). When
-		``None``, calls route to ``session.current_session_id`` — the
-		"current tab" — which is the default for the agentic loop.
+	def __init__(self, session: BrowserSession, cdp_session_id: str | None = None) -> None:
+		"""Wrap a BrowserSession, routing every CDP call to ``cdp_session_id``.
 
-		Use :meth:`for_target` to build a target-pinned instance from a
-		target_id (the way :class:`DomService` works with per-frame
-		sessions)."""
+		Resolving a session id needs an await (``get_or_create_cdp_session``), so
+		it cannot happen lazily inside a sync helper — build instances through
+		:meth:`for_target` (a specific tab/iframe, the way :class:`DomService`
+		works with per-frame sessions) or :meth:`for_current_target` (the focused
+		tab, the default for the agentic loop). A bare ``None`` is accepted so
+		those factories can construct the object, but using it raises."""
 		self._session = session
 		self._cdp_session_id = cdp_session_id
 
 	@classmethod
-	async def for_target(cls, session: BrowserSession, target_id: str,
-	                     *, focus: bool = False) -> CdpBrowserAdapter:
+	async def for_target(cls, session: BrowserSession, target_id: str, *, focus: bool = False) -> CdpBrowserAdapter:
 		"""Build an adapter pinned to a specific CDP target (tab/iframe).
 
 		Used by consumers that walk multiple frames (DomService,
 		cross-frame action handlers). For "just talk to the current tab"
 		use the bare constructor."""
 		cdp_session = await session.get_or_create_cdp_session(
-			target_id=target_id, focus=focus,
+			target_id=target_id,
+			focus=focus,
 		)
+		return cls(session, cdp_session_id=cdp_session.session_id)
+
+	@classmethod
+	async def for_current_target(cls, session: BrowserSession) -> CdpBrowserAdapter:
+		"""Build an adapter pinned to the session's focused tab."""
+		cdp_session = await session.get_or_create_cdp_session()
 		return cls(session, cdp_session_id=cdp_session.session_id)
 
 	# Helpers ----------------------------------------------------------------
 
 	def _session_id(self) -> str:
-		"""Resolve the CDP session_id to route a command to. Pinned target
-		wins when set; otherwise tracks ``current_session_id``."""
-		return self._cdp_session_id or self._session.current_session_id
+		"""The CDP session_id every command routes to."""
+		if self._cdp_session_id is None:
+			raise RuntimeError(
+				'CdpBrowserAdapter has no CDP session: build it with '
+				'CdpBrowserAdapter.for_target(session, target_id) or '
+				'.for_current_target(session) — resolving a session id requires an await.'
+			)
+		return self._cdp_session_id
 
 	async def _eval(self, expression: str, *, return_by_value: bool = True) -> Any:
 		"""``Runtime.evaluate`` round-trip. Returns the unwrapped value."""
 		cdp = self._session.cdp_client
 		result = await cdp.send.Runtime.evaluate(
-			params={'expression': expression, 'returnByValue': return_by_value,
-			        'awaitPromise': True},
+			params={'expression': expression, 'returnByValue': return_by_value, 'awaitPromise': True},
 			session_id=self._session_id(),
 		)
 		if result.get('exceptionDetails'):
@@ -332,8 +325,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 
 	# Navigation -------------------------------------------------------------
 
-	async def goto(self, url: str, *, wait_until: str = 'load',
-	               timeout_ms: int = 30_000) -> dict[str, Any]:
+	async def goto(self, url: str, *, wait_until: str = 'load', timeout_ms: int = 30_000) -> dict[str, Any]:
 		cdp = self._session.cdp_client
 		await cdp.send.Page.navigate(
 			params={'url': url, 'transitionType': 'typed'},
@@ -342,8 +334,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 		await self.wait_for_load_state(wait_until, timeout_ms=timeout_ms)
 		return {'url': await self.url(), 'status': None}  # CDP doesn't surface main-frame status here
 
-	async def reload(self, *, wait_until: str = 'load',
-	                 timeout_ms: int = 30_000) -> None:
+	async def reload(self, *, wait_until: str = 'load', timeout_ms: int = 30_000) -> None:
 		cdp = self._session.cdp_client
 		await cdp.send.Page.reload(params={}, session_id=self._session_id())
 		await self.wait_for_load_state(wait_until, timeout_ms=timeout_ms)
@@ -354,8 +345,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 	async def title(self) -> str:
 		return await self._eval('document.title')
 
-	async def wait_for_load_state(self, state: str = 'load',
-	                              *, timeout_ms: int = 30_000) -> None:
+	async def wait_for_load_state(self, state: str = 'load', *, timeout_ms: int = 30_000) -> None:
 		# Best-effort cross-browser implementation via readyState polling.
 		# A production-grade impl listens to Page.lifecycleEvent.
 		# 'load' → readyState == 'complete'; 'domcontentloaded' → 'interactive' or 'complete'.
@@ -367,6 +357,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 		}.get(state, ('complete',))
 		# Poll up to timeout_ms.
 		import asyncio
+
 		deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
 		while asyncio.get_event_loop().time() < deadline:
 			rs = await self._eval('document.readyState')
@@ -399,6 +390,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 	async def _wait_for_match(self, css_selector: str, timeout_ms: int) -> None:
 		"""Block until ``locator_count > 0``; raise on timeout."""
 		import asyncio
+
 		deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
 		while asyncio.get_event_loop().time() < deadline:
 			if await self.locator_count(css_selector) > 0:
@@ -406,8 +398,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 			await asyncio.sleep(0.05)
 		raise TimeoutError(f'no element matched {css_selector!r} within {timeout_ms}ms')
 
-	async def locator_inner_text(self, css_selector: str, *,
-	                             timeout_ms: int = 2_000) -> str:
+	async def locator_inner_text(self, css_selector: str, *, timeout_ms: int = 2_000) -> str:
 		await self._wait_for_match(css_selector, timeout_ms)
 		js = (
 			f'(() => {{ const el = document.querySelector({self._css_literal(css_selector)}); '
@@ -418,8 +409,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 			raise RuntimeError(f'no element matched {css_selector!r}')
 		return out
 
-	async def locator_get_attribute(self, css_selector: str, attribute: str, *,
-	                                timeout_ms: int = 2_000) -> str | None:
+	async def locator_get_attribute(self, css_selector: str, attribute: str, *, timeout_ms: int = 2_000) -> str | None:
 		await self._wait_for_match(css_selector, timeout_ms)
 		js = (
 			f'(() => {{ const el = document.querySelector({self._css_literal(css_selector)}); '
@@ -427,8 +417,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 		)
 		return await self._eval(js)
 
-	async def locator_is_visible(self, css_selector: str, *,
-	                             timeout_ms: int = 2_000) -> bool:
+	async def locator_is_visible(self, css_selector: str, *, timeout_ms: int = 2_000) -> bool:
 		if await self.locator_count(css_selector) == 0:
 			return False
 		js = (
@@ -461,8 +450,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 		)
 		await self._eval(js)
 
-	async def fill(self, css_selector: str, value: str, *,
-	               timeout_ms: int = 5_000) -> None:
+	async def fill(self, css_selector: str, value: str, *, timeout_ms: int = 5_000) -> None:
 		await self._wait_for_match(css_selector, timeout_ms)
 		js = (
 			f'(() => {{ const el = document.querySelector({self._css_literal(css_selector)}); '
@@ -474,8 +462,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 		)
 		await self._eval(js)
 
-	async def press(self, css_selector: str, key: str, *,
-	                timeout_ms: int = 5_000) -> None:
+	async def press(self, css_selector: str, key: str, *, timeout_ms: int = 5_000) -> None:
 		await self._wait_for_match(css_selector, timeout_ms)
 		# Playwright-style key names map directly to KeyboardEvent.key for
 		# the common cases (Enter, Escape, Tab, ArrowDown, …). Single-char
@@ -503,17 +490,22 @@ class CdpBrowserAdapter(BrowserAdapter):
 
 	# Waiting ----------------------------------------------------------------
 
-	async def wait_for_selector(self, css_selector: str, *,
-	                            state: str = 'visible',
-	                            timeout_ms: int = 30_000) -> None:
+	async def wait_for_selector(self, css_selector: str, *, state: str = 'visible', timeout_ms: int = 30_000) -> None:
 		import asyncio
+
 		deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
 		while asyncio.get_event_loop().time() < deadline:
 			count = await self.locator_count(css_selector)
-			if state == 'attached'  and count > 0: return
-			if state == 'detached'  and count == 0: return
-			if state == 'visible'   and count > 0 and await self.locator_is_visible(css_selector, timeout_ms=100): return
-			if state == 'hidden'    and (count == 0 or not await self.locator_is_visible(css_selector, timeout_ms=100)): return
+			if state == 'attached' and count > 0:
+				return
+			if state == 'detached' and count == 0:
+				return
+			if state == 'visible' and count > 0:
+				if await self.locator_is_visible(css_selector, timeout_ms=100):
+					return
+			if state == 'hidden':
+				if count == 0 or not await self.locator_is_visible(css_selector, timeout_ms=100):
+					return
 			await asyncio.sleep(0.05)
 		raise TimeoutError(f'wait_for_selector({css_selector!r}, state={state!r}) timed out')
 
@@ -564,12 +556,12 @@ class CdpBrowserAdapter(BrowserAdapter):
 				'dpr: window.devicePixelRatio}))()'
 			)
 			return {
-				'width':              int(vm.get('w', 0)),
-				'height':             int(vm.get('h', 0)),
-				'scroll_x':           int(vm.get('sx', 0)),
-				'scroll_y':           int(vm.get('sy', 0)),
-				'document_width':     int(vm.get('dw', 0)),
-				'document_height':    int(vm.get('dh', 0)),
+				'width': int(vm.get('w', 0)),
+				'height': int(vm.get('h', 0)),
+				'scroll_x': int(vm.get('sx', 0)),
+				'scroll_y': int(vm.get('sy', 0)),
+				'document_width': int(vm.get('dw', 0)),
+				'document_height': int(vm.get('dh', 0)),
 				'device_pixel_ratio': float(vm.get('dpr', 1.0)),
 			}
 		# CDP-only normalised shape. We expose only what we can guarantee
@@ -583,20 +575,19 @@ class CdpBrowserAdapter(BrowserAdapter):
 		css_w = float(css_visual.get('clientWidth', 0))
 		dpr = device_w / css_w if css_w > 0 else 1.0
 		return {
-			'width':              int(css_visual.get('clientWidth', css_layout.get('clientWidth', 0))),
-			'height':             int(css_visual.get('clientHeight', css_layout.get('clientHeight', 0))),
-			'scroll_x':           int(css_visual.get('pageX', 0)),
-			'scroll_y':           int(css_visual.get('pageY', 0)),
-			'document_width':     int(content_size.get('width', 0)),
-			'document_height':    int(content_size.get('height', 0)),
+			'width': int(css_visual.get('clientWidth', css_layout.get('clientWidth', 0))),
+			'height': int(css_visual.get('clientHeight', css_layout.get('clientHeight', 0))),
+			'scroll_x': int(css_visual.get('pageX', 0)),
+			'scroll_y': int(css_visual.get('pageY', 0)),
+			'document_width': int(content_size.get('width', 0)),
+			'document_height': int(content_size.get('height', 0)),
 			'device_pixel_ratio': dpr,
-			'_raw':               metrics,
+			'_raw': metrics,
 		}
 
 	# Media ------------------------------------------------------------------
 
-	async def screenshot(self, *, full_page: bool = False,
-	                     fmt: Literal['png', 'jpeg'] = 'png') -> bytes:
+	async def screenshot(self, *, full_page: bool = False, fmt: Literal['png', 'jpeg'] = 'png') -> bytes:
 		cdp = self._session.cdp_client
 		result = await cdp.send.Page.captureScreenshot(
 			params={'format': fmt, 'captureBeyondViewport': full_page},
@@ -606,12 +597,12 @@ class CdpBrowserAdapter(BrowserAdapter):
 
 	# Accessibility ----------------------------------------------------------
 
-	async def accessibility_snapshot(self, *,
-	                                 interesting_only: bool = True) -> dict | None:
+	async def accessibility_snapshot(self, *, interesting_only: bool = True) -> dict | None:
 		cdp = self._session.cdp_client
 		try:
 			result = await cdp.send.Accessibility.getFullAXTree(
-				params={}, session_id=self._session_id(),
+				params={},
+				session_id=self._session_id(),
 			)
 		except Exception:
 			return None
@@ -624,6 +615,7 @@ class CdpBrowserAdapter(BrowserAdapter):
 
 	async def accessibility_snapshot_all_frames(self) -> dict[str, Any]:
 		import asyncio
+
 		cdp = self._session.cdp_client
 		# 1. Frame tree — protocol-internal CDP op (Page.getFrameTree).
 		frame_tree = await cdp.send.Page.getFrameTree(session_id=self._session_id())
@@ -634,13 +626,15 @@ class CdpBrowserAdapter(BrowserAdapter):
 			for child in node.get('childFrames') or []:
 				ids.extend(_collect_frame_ids(child))
 			return ids
-		frame_ids = _collect_frame_ids(frame_tree['frameTree'])
+
+		frame_ids = _collect_frame_ids(cast('dict[str, Any]', frame_tree['frameTree']))
 
 		# 3. Per-frame ax tree in parallel. Root is required (its failure
 		# propagates); child frames that detach mid-request are tolerated.
 		requests = [
 			cdp.send.Accessibility.getFullAXTree(
-				params={'frameId': fid}, session_id=self._session_id(),
+				params={'frameId': fid},
+				session_id=self._session_id(),
 			)
 			for fid in frame_ids
 		]
@@ -648,27 +642,28 @@ class CdpBrowserAdapter(BrowserAdapter):
 		root = results[0]
 		if isinstance(root, BaseException):
 			raise root
-		merged: list[dict] = list(root.get('nodes', []))
+		merged: list[dict] = list(cast('list[dict[str, Any]]', root.get('nodes', [])))
 		for fid, res in zip(frame_ids[1:], results[1:]):
 			if isinstance(res, BaseException):
 				continue
-			merged.extend(res.get('nodes', []))
+			merged.extend(cast('list[dict[str, Any]]', res.get('nodes', [])))
 		return {'nodes': merged}
 
 	# Cookies ----------------------------------------------------------------
 
 	async def get_cookies(self, urls: list[str] | None = None) -> list[dict[str, Any]]:
 		cdp = self._session.cdp_client
-		params = {'urls': urls} if urls else {}
 		result = await cdp.send.Network.getCookies(
-			params=params, session_id=self._session_id(),
+			params=cast('Any', {'urls': urls} if urls else {}),
+			session_id=self._session_id(),
 		)
-		return result.get('cookies', [])
+		return cast('list[dict[str, Any]]', result.get('cookies', []))
 
 	async def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
 		cdp = self._session.cdp_client
 		await cdp.send.Network.setCookies(
-			params={'cookies': cookies}, session_id=self._session_id(),
+			params=cast('Any', {'cookies': cookies}),
+			session_id=self._session_id(),
 		)
 
 	# Lifecycle --------------------------------------------------------------
@@ -696,14 +691,12 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 
 	# Navigation -------------------------------------------------------------
 
-	async def goto(self, url: str, *, wait_until: str = 'load',
-	               timeout_ms: int = 30_000) -> dict[str, Any]:
-		response = await self._page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+	async def goto(self, url: str, *, wait_until: str = 'load', timeout_ms: int = 30_000) -> dict[str, Any]:
+		response = await self._page.goto(url, wait_until=cast('Any', wait_until), timeout=timeout_ms)
 		return {'url': self._page.url, 'status': response.status if response else None}
 
-	async def reload(self, *, wait_until: str = 'load',
-	                 timeout_ms: int = 30_000) -> None:
-		await self._page.reload(wait_until=wait_until, timeout=timeout_ms)
+	async def reload(self, *, wait_until: str = 'load', timeout_ms: int = 30_000) -> None:
+		await self._page.reload(wait_until=cast('Any', wait_until), timeout=timeout_ms)
 
 	async def url(self) -> str:
 		return self._page.url
@@ -711,9 +704,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 	async def title(self) -> str:
 		return await self._page.title()
 
-	async def wait_for_load_state(self, state: str = 'load',
-	                              *, timeout_ms: int = 30_000) -> None:
-		await self._page.wait_for_load_state(state, timeout=timeout_ms)
+	async def wait_for_load_state(self, state: str = 'load', *, timeout_ms: int = 30_000) -> None:
+		await self._page.wait_for_load_state(cast('Any', state), timeout=timeout_ms)
 
 	# Content + script -------------------------------------------------------
 
@@ -728,16 +720,13 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 	async def locator_count(self, css_selector: str) -> int:
 		return await self._page.locator(css_selector).count()
 
-	async def locator_inner_text(self, css_selector: str, *,
-	                             timeout_ms: int = 2_000) -> str:
+	async def locator_inner_text(self, css_selector: str, *, timeout_ms: int = 2_000) -> str:
 		return await self._page.locator(css_selector).first.inner_text(timeout=timeout_ms)
 
-	async def locator_get_attribute(self, css_selector: str, attribute: str, *,
-	                                timeout_ms: int = 2_000) -> str | None:
+	async def locator_get_attribute(self, css_selector: str, attribute: str, *, timeout_ms: int = 2_000) -> str | None:
 		return await self._page.locator(css_selector).first.get_attribute(attribute, timeout=timeout_ms)
 
-	async def locator_is_visible(self, css_selector: str, *,
-	                             timeout_ms: int = 2_000) -> bool:
+	async def locator_is_visible(self, css_selector: str, *, timeout_ms: int = 2_000) -> bool:
 		try:
 			return await self._page.locator(css_selector).first.is_visible(timeout=timeout_ms)
 		except Exception:
@@ -748,12 +737,10 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 	async def click(self, css_selector: str, *, timeout_ms: int = 5_000) -> None:
 		await self._page.locator(css_selector).first.click(timeout=timeout_ms)
 
-	async def fill(self, css_selector: str, value: str, *,
-	               timeout_ms: int = 5_000) -> None:
+	async def fill(self, css_selector: str, value: str, *, timeout_ms: int = 5_000) -> None:
 		await self._page.locator(css_selector).first.fill(value, timeout=timeout_ms)
 
-	async def press(self, css_selector: str, key: str, *,
-	                timeout_ms: int = 5_000) -> None:
+	async def press(self, css_selector: str, key: str, *, timeout_ms: int = 5_000) -> None:
 		await self._page.locator(css_selector).first.press(key, timeout=timeout_ms)
 
 	async def hover(self, css_selector: str, *, timeout_ms: int = 5_000) -> None:
@@ -761,10 +748,8 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 
 	# Waiting ----------------------------------------------------------------
 
-	async def wait_for_selector(self, css_selector: str, *,
-	                            state: str = 'visible',
-	                            timeout_ms: int = 30_000) -> None:
-		await self._page.wait_for_selector(css_selector, state=state, timeout=timeout_ms)
+	async def wait_for_selector(self, css_selector: str, *, state: str = 'visible', timeout_ms: int = 30_000) -> None:
+		await self._page.wait_for_selector(css_selector, state=cast('Any', state), timeout=timeout_ms)
 
 	# Page state -------------------------------------------------------------
 
@@ -784,19 +769,18 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 			'dpr: window.devicePixelRatio})'
 		)
 		return {
-			'width':              int(vm['w']),
-			'height':             int(vm['h']),
-			'scroll_x':           int(vm['sx']),
-			'scroll_y':           int(vm['sy']),
-			'document_width':     int(vm['dw']),
-			'document_height':    int(vm['dh']),
+			'width': int(vm['w']),
+			'height': int(vm['h']),
+			'scroll_x': int(vm['sx']),
+			'scroll_y': int(vm['sy']),
+			'document_width': int(vm['dw']),
+			'document_height': int(vm['dh']),
 			'device_pixel_ratio': float(vm['dpr']),
 		}
 
 	# Media ------------------------------------------------------------------
 
-	async def screenshot(self, *, full_page: bool = False,
-	                     fmt: Literal['png', 'jpeg'] = 'png') -> bytes:
+	async def screenshot(self, *, full_page: bool = False, fmt: Literal['png', 'jpeg'] = 'png') -> bytes:
 		return await self._page.screenshot(full_page=full_page, type=fmt)
 
 	# Accessibility ----------------------------------------------------------
@@ -821,8 +805,7 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 		'instead; for a role/name outline use locator.aria_snapshot().'
 	)
 
-	async def accessibility_snapshot(self, *,
-	                                 interesting_only: bool = True) -> dict | None:
+	async def accessibility_snapshot(self, *, interesting_only: bool = True) -> dict | None:
 		raise NotImplementedError(self._NO_AX_TREE)
 
 	async def accessibility_snapshot_all_frames(self) -> dict[str, Any]:
@@ -831,10 +814,10 @@ class PlaywrightBrowserAdapter(BrowserAdapter):
 	# Cookies ----------------------------------------------------------------
 
 	async def get_cookies(self, urls: list[str] | None = None) -> list[dict[str, Any]]:
-		return await self._page.context.cookies(urls or [])
+		return cast('list[dict[str, Any]]', await self._page.context.cookies(urls or []))
 
 	async def set_cookies(self, cookies: list[dict[str, Any]]) -> None:
-		await self._page.context.add_cookies(cookies)
+		await self._page.context.add_cookies(cast('Any', cookies))
 
 	# Lifecycle --------------------------------------------------------------
 

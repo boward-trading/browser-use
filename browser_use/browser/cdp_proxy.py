@@ -44,7 +44,7 @@ milestone — methods in that domain currently raise NotImplemented.
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, cast
 
 from cdp_use import CDPClient
 
@@ -149,7 +149,9 @@ class BidiCdpProxy(CDPClient):
 		# constructor would try to stand up a websocket client. We only need
 		# the type identity + the cdp_use typed libraries (built below).
 		self._conn = connection
-		self.ws = _FakeWs(connection)
+		# CDPClient.ws is typed as a real websocket ClientConnection; this facade
+		# stands in for one so liveness checks keep working without a socket.
+		self.ws = cast('Any', _FakeWs(connection))
 		self.msg_id = 0
 
 		# Reuse cdp_use's generated typed libraries verbatim — they bottom
@@ -328,7 +330,9 @@ class BidiCdpProxy(CDPClient):
 	async def _Page_getNavigationHistory(self, params: dict, session_id: Optional[str]) -> dict:
 		return {
 			'currentIndex': 0,
-			'entries': [{'id': 0, 'url': self._safe_url(), 'userTypedURL': self._safe_url(), 'title': '', 'transitionType': 'typed'}],
+			'entries': [
+				{'id': 0, 'url': self._safe_url(), 'userTypedURL': self._safe_url(), 'title': '', 'transitionType': 'typed'}
+			],
 		}
 
 	async def _Page_captureScreenshot(self, params: dict, session_id: Optional[str]) -> dict:
@@ -393,8 +397,9 @@ class BidiCdpProxy(CDPClient):
 		out = []
 		for name, child in props.items():
 			child_oid = self._nodes.mint_object(child)
-			out.append({'name': name, 'enumerable': True, 'configurable': True,
-				'value': {'type': 'object', 'objectId': child_oid}})
+			out.append(
+				{'name': name, 'enumerable': True, 'configurable': True, 'value': {'type': 'object', 'objectId': child_oid}}
+			)
 		return {'result': out}
 
 	async def _Runtime_releaseObject(self, params: dict, session_id: Optional[str]) -> dict:
@@ -405,7 +410,7 @@ class BidiCdpProxy(CDPClient):
 				await handle.dispose()
 			except Exception:
 				pass
-			self._nodes._by_object.pop(oid, None)
+			self._nodes._by_object.pop(cast('str', oid), None)
 		return {}
 
 	# ── DOM / DOMSnapshot (OBSERVE — the synthetic node-identity core) ───

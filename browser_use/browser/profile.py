@@ -461,6 +461,18 @@ class BrowserLaunchArgs(BaseModel):
 			'package resolve its own fetched binary.'
 		),
 	)
+	camoufox_options: dict[str, Any] = Field(
+		default_factory=dict,
+		description=(
+			'Extra keyword arguments for camoufox, merged over whatever the Firefox engine '
+			'derives from this profile (so these win). This is where a caller supplies the '
+			'identity camoufox would otherwise regenerate per launch — `fingerprint`, '
+			'`config`, `humanize`, `addons`, `geoip`, `i_know_what_im_doing`. Pinning it '
+			'matters for a logged-in profile: anti-bot clearance is bound to the identity '
+			'that earned it, so a fresh fingerprint silently invalidates those cookies. '
+			'Ignored unless browser_type is FIREFOX.'
+		),
+	)
 	chromium_sandbox: bool = Field(
 		default=not CONFIG.IN_DOCKER, description='Whether to enable Chromium sandboxing (recommended unless inside Docker).'
 	)

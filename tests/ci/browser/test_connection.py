@@ -11,6 +11,7 @@ gated on CI infra it would require).
 from __future__ import annotations
 
 import inspect
+
 import pytest
 
 from browser_use.browser.connection import (
@@ -19,7 +20,6 @@ from browser_use.browser.connection import (
 	CdpBrowserConnection,
 	connection_from_browser_type,
 )
-
 
 # ── ABC contract ─────────────────────────────────────────────────────────────
 
@@ -30,17 +30,12 @@ def test_browser_connection_is_abstract() -> None:
 
 
 def test_concrete_connections_implement_every_abstract_method() -> None:
-	abstract = {
-		name for name, method in BrowserConnection.__dict__.items()
-		if getattr(method, '__isabstractmethod__', False)
-	}
+	abstract = {name for name, method in BrowserConnection.__dict__.items() if getattr(method, '__isabstractmethod__', False)}
 	# start/stop are async; is_open is a sync property.
 	assert 'start' in abstract and 'stop' in abstract and 'is_open' in abstract
 
 	for cls in (CdpBrowserConnection, BidiBrowserConnection):
-		assert not cls.__abstractmethods__, (
-			f'{cls.__name__} still has abstract methods: {cls.__abstractmethods__}'
-		)
+		assert not cls.__abstractmethods__, f'{cls.__name__} still has abstract methods: {cls.__abstractmethods__}'
 
 
 def test_backend_identifiers() -> None:
@@ -55,7 +50,7 @@ def test_backend_identifiers() -> None:
 
 def test_factory_routes_known_types() -> None:
 	assert connection_from_browser_type('chromium') is CdpBrowserConnection
-	assert connection_from_browser_type('firefox')  is BidiBrowserConnection
+	assert connection_from_browser_type('firefox') is BidiBrowserConnection
 
 
 def test_factory_rejects_unknown_type() -> None:
@@ -109,6 +104,5 @@ def test_signatures_match_abc() -> None:
 		for cls in (CdpBrowserConnection, BidiBrowserConnection):
 			impl_sig = inspect.signature(getattr(cls, name))
 			assert list(impl_sig.parameters) == list(abc_sig.parameters), (
-				f'{cls.__name__}.{name} param order diverges from ABC: '
-				f'{list(impl_sig.parameters)} vs {list(abc_sig.parameters)}'
+				f'{cls.__name__}.{name} param order diverges from ABC: {list(impl_sig.parameters)} vs {list(abc_sig.parameters)}'
 			)
