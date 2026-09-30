@@ -1,6 +1,7 @@
-"""Screenshot watchdog for handling screenshot requests using CDP."""
+"""Screenshot watchdog — dual-mode CDP / Playwright via BrowserAdapter."""
 
 import asyncio
+import base64
 import os
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -17,7 +18,19 @@ if TYPE_CHECKING:
 
 
 class ScreenshotWatchdog(BaseWatchdog):
-	"""Handles screenshot requests using CDP."""
+	"""Handles screenshot requests on both CDP and BiDi backends.
+
+	Phase-5b port. The Chromium path (CDP) is bit-identical to the
+	previous implementation. On BiDi (Firefox/Camoufox) we go through
+	the :class:`PlaywrightBrowserAdapter` which has the
+	:meth:`screenshot` method on the page-level contract.
+
+	Caveat for the BiDi path: ``event.clip`` is honoured only on the
+	CDP backend today — Playwright's ``page.screenshot(clip=…)`` exists
+	but uses a slightly different coordinate origin and we haven't
+	verified parity yet. When ``event.clip`` is set on BiDi we still
+	take a full-page / full-viewport screenshot and log a warning.
+	"""
 
 	DEFAULT_CAPTURE_COMMAND_TIMEOUT_SECONDS: ClassVar[float] = 10.0
 	CAPTURE_COMMAND_TIMEOUT_ENV: ClassVar[str] = 'BROWSER_USE_SCREENSHOT_COMMAND_TIMEOUT_SECONDS'
@@ -38,9 +51,7 @@ class ScreenshotWatchdog(BaseWatchdog):
 				if parsed > 0:
 					configured_timeout = parsed
 			except ValueError:
-				self.logger.debug(
-					f'[ScreenshotWatchdog] Ignoring invalid {self.CAPTURE_COMMAND_TIMEOUT_ENV}={env_value!r}'
-				)
+				self.logger.debug(f'[ScreenshotWatchdog] Ignoring invalid {self.CAPTURE_COMMAND_TIMEOUT_ENV}={env_value!r}')
 
 		event_timeout = float(event.event_timeout) if event.event_timeout is not None else None
 		if event_timeout is None:
@@ -121,15 +132,22 @@ class ScreenshotWatchdog(BaseWatchdog):
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='screenshot_event_handler')
 	async def on_ScreenshotEvent(self, event: ScreenshotEvent) -> str:
-		"""Handle screenshot request using CDP.
-
-		Args:
-			event: ScreenshotEvent with optional full_page and clip parameters
+		"""Handle screenshot request. Dispatches by backend.
 
 		Returns:
-			Dict with 'screenshot' key containing base64-encoded screenshot or None
+			Base64-encoded PNG screenshot data (no `data:` URL prefix).
 		"""
-		self.logger.debug('[ScreenshotWatchdog] Handler START - on_ScreenshotEvent called')
+		# Phase-5b dispatch: route to the BiDi handler when the session
+		# is on a Playwright/Firefox backend. Falls through to the
+		# legacy CDP path otherwise.
+		conn = getattr(self.browser_session, '_connection', None)
+		if conn is not None and conn.backend == 'bidi':
+			return await self._on_screenshot_bidi(event)
+		return await self._on_screenshot_cdp(event)
+
+	async def _on_screenshot_cdp(self, event: ScreenshotEvent) -> str:
+		"""Legacy CDP path — bit-identical to the pre-Phase-5b implementation."""
+		self.logger.debug('[ScreenshotWatchdog] (CDP) Handler START - on_ScreenshotEvent called')
 		try:
 			# Remove highlights BEFORE taking the screenshot so they don't appear in the image.
 			# Done here (not in finally) so CancelledError is never swallowed — any await in a
@@ -167,5 +185,33 @@ class ScreenshotWatchdog(BaseWatchdog):
 				raise last_error
 			raise BrowserError('[ScreenshotWatchdog] Screenshot failed without a captured error')
 		except Exception as e:
-			self.logger.error(f'[ScreenshotWatchdog] Screenshot failed: {e}')
+			self.logger.error(f'[ScreenshotWatchdog] (CDP) Screenshot failed: {e}')
+			raise
+
+	async def _on_screenshot_bidi(self, event: ScreenshotEvent) -> str:
+		"""BiDi (Playwright Firefox/Camoufox) path via BrowserAdapter."""
+		self.logger.debug('[ScreenshotWatchdog] (BiDi) Handler START - on_ScreenshotEvent called')
+		try:
+			# Try removing highlights first — same posture as the CDP path.
+			# The method is CDP-bound on the current codebase and no-ops
+			# (or raises silently) on BiDi; suppress and continue.
+			try:
+				await self.browser_session.remove_highlights()
+			except Exception:
+				pass
+
+			if event.clip:
+				self.logger.warning(
+					'[ScreenshotWatchdog] (BiDi) `event.clip` not yet honoured on the '
+					'Playwright path — taking a full-viewport screenshot instead'
+				)
+
+			adapter = await self.browser_session.get_adapter()
+			png_bytes = await adapter.screenshot(full_page=bool(event.full_page), fmt='png')
+			# Return base64-encoded PNG (no data: prefix) to match the CDP path's contract.
+			b64 = base64.b64encode(png_bytes).decode('ascii')
+			self.logger.debug('[ScreenshotWatchdog] (BiDi) Screenshot captured successfully')
+			return b64
+		except Exception as e:
+			self.logger.error(f'[ScreenshotWatchdog] (BiDi) Screenshot failed: {e}')
 			raise

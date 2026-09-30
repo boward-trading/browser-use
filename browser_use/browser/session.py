@@ -505,6 +505,14 @@ class BrowserSession(BaseModel):
 		A dead/closing/closed WebSocket returns False, preventing handlers from dispatching
 		CDP commands that would hang until timeout on a broken connection.
 		"""
+		# BiDi (Firefox) path: liveness is the Playwright Browser connection,
+		# surfaced through BidiBrowserConnection.is_open. The CDP→Playwright
+		# proxy is always usable while that's open.
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			try:
+				return bool(self._connection.is_open)
+			except Exception:
+				return False
 		if self._cdp_client_root is None or self._cdp_client_root.ws is None:
 			return False
 		try:
@@ -553,6 +561,19 @@ class BrowserSession(BaseModel):
 
 	# Mutable private state shared between watchdogs
 	_cdp_client_root: CDPClient | None = PrivateAttr(default=None)
+	# Phase-5 BiDi facade: the CDP→Playwright proxy returned by the
+	# `cdp_client` property when the connection backend is 'bidi'. Built in
+	# connect() (Firefox branch); None on the CDP/Chromium path.
+	_bidi_cdp_proxy: Any = PrivateAttr(default=None)  # BidiCdpProxy | None
+	# Phase-5a foundation: the protocol-agnostic connection. CDP path:
+	# wraps _cdp_client_root after the existing connect logic builds it.
+	# Firefox/BiDi path: wraps a Playwright Browser obtained via
+	# firefox.connect(ws_url). Stays in sync with _cdp_client_root for
+	# back-compat — the legacy `cdp_client` accessor below still works
+	# on the CDP backend, and the BiDi backend leaves it as None (any
+	# legacy code that dereferences it on Firefox raises a clear error
+	# instead of mis-dispatching).
+	_connection: Any = PrivateAttr(default=None)  # BrowserConnection
 	_connection_lock: Any = PrivateAttr(default=None)  # asyncio.Lock for preventing concurrent connections
 
 	# PUBLIC: SessionManager instance (OWNS all targets and sessions)
@@ -649,15 +670,25 @@ class BrowserSession(BaseModel):
 			await self.session_manager.clear()
 			self.session_manager = None
 
-		# Close CDP WebSocket before clearing to prevent stale event handlers
+		# Close CDP WebSocket before clearing to prevent stale event handlers.
+		# Phase-5a: when the protocol connection wrapper exists (and isn't
+		# just aliasing _cdp_client_root) we also stop it — covers the
+		# BiDi path where _cdp_client_root is never set.
 		if self._cdp_client_root:
 			try:
 				await self._cdp_client_root.stop()
 				self.logger.debug('Closed CDP client WebSocket during reset')
 			except Exception as e:
 				self.logger.debug(f'Error closing CDP client during reset: {e}')
+		elif self._connection is not None:
+			try:
+				await self._connection.stop()
+				self.logger.debug(f'Closed {self._connection.backend} connection during reset')
+			except Exception as e:
+				self.logger.debug(f'Error closing connection during reset: {e}')
 
 		self._cdp_client_root = None  # type: ignore
+		self._connection = None
 		self._cached_browser_state_summary = None
 		self._cached_selector_map.clear()
 		self._cached_selector_indices.clear()
@@ -775,11 +806,12 @@ class BrowserSession(BaseModel):
 		await self.stop()
 
 	@observe_debug(ignore_input=True, ignore_output=True, name='browser_start_event_handler')
-	async def on_BrowserStartEvent(self, event: BrowserStartEvent) -> dict[str, str]:
+	async def on_BrowserStartEvent(self, event: BrowserStartEvent) -> dict[str, str | None]:
 		"""Handle browser start request.
 
 		Returns:
-			Dict with 'cdp_url' key containing the CDP URL
+			Dict with 'cdp_url' key containing the CDP URL — None on the
+			Firefox/BiDi backend, which has no endpoint to report.
 
 		Note: This method is idempotent - calling start() multiple times is safe.
 		- If already connected, it skips reconnection
@@ -789,9 +821,17 @@ class BrowserSession(BaseModel):
 		# Initialize and attach all watchdogs FIRST so LocalBrowserWatchdog can handle BrowserLaunchEvent
 		await self.attach_all_watchdogs()
 
+		from browser_use.browser.profile import BrowserType
+
+		# Firefox/Camoufox brings itself up inside connect(): there is no CDP URL to
+		# acquire, and dispatching BrowserLaunchEvent here would have
+		# LocalBrowserWatchdog launch Chromium instead. A cdp_url on a Firefox
+		# profile is read as a remote Camoufox ws endpoint.
+		bidi = self.browser_profile.browser_type == BrowserType.FIREFOX
+
 		try:
 			# If no CDP URL, launch local browser or cloud browser
-			if not self.cdp_url:
+			if not self.cdp_url and not bidi:
 				if self.browser_profile.use_cloud or self.browser_profile.cloud_browser_params is not None:
 					# Use cloud browser service
 					try:
@@ -818,12 +858,13 @@ class BrowserSession(BaseModel):
 				else:
 					raise ValueError('Got BrowserSession(is_local=False) but no cdp_url was provided to connect to!')
 
-			assert self.cdp_url and '://' in self.cdp_url
+			assert bidi or (self.cdp_url and '://' in self.cdp_url)
 
 			# Use lock to prevent concurrent connection attempts (race condition protection)
 			async with self._connection_lock:
-				# Only connect if not already connected
-				if self._cdp_client_root is None:
+				# Only connect if not already connected. On BiDi the root CDP client is
+				# never built, so liveness is the connection wrapper instead.
+				if self._cdp_client_root is None and not (bidi and self._connection is not None):
 					# Setup browser via CDP (for both local and remote cases)
 					# Global timeout prevents connect() from hanging indefinitely on
 					# slow/broken WebSocket connections (common on Lambda → remote browser)
@@ -897,6 +938,28 @@ class BrowserSession(BaseModel):
 	async def on_NavigateToUrlEvent(self, event: NavigateToUrlEvent) -> None:
 		"""Handle navigation requests - core browser functionality."""
 		self.logger.debug(f'[on_NavigateToUrlEvent] Received NavigateToUrlEvent: url={event.url}, new_tab={event.new_tab}')
+
+		# BiDi: single-tab posture, no CDP target pool — navigate the live
+		# Playwright page straight through the proxy (→ adapter.goto) and
+		# announce completion. Bypasses the session_manager/target machinery.
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			from browser_use.browser.cdp_proxy import _SYNTHETIC_TARGET_ID
+
+			try:
+				res = await self.cdp_client.send.Page.navigate(params={'url': event.url})
+				err = res.get('errorText') if isinstance(res, dict) else None
+			except Exception as e:
+				err = f'{type(e).__name__}: {e}'
+			self.agent_focus_target_id = cast('TargetID', _SYNTHETIC_TARGET_ID)
+			await self.event_bus.dispatch(
+				NavigationCompleteEvent(
+					target_id=cast('TargetID', _SYNTHETIC_TARGET_ID),
+					url=event.url,
+					error_message=err,
+				)
+			)
+			return
+
 		if not self.agent_focus_target_id:
 			self.logger.warning('Cannot navigate - browser not connected')
 			return
@@ -1329,9 +1392,61 @@ class BrowserSession(BaseModel):
 	# region - ========== CDP-based replacements for browser_context operations ==========
 	@property
 	def cdp_client(self) -> CDPClient:
-		"""Get the cached root CDP cdp_session.cdp_client. The client is created and started in self.connect()."""
+		"""Get the cached root CDP client. Created+started in self.connect().
+
+		BiDi (Firefox/Camoufox) path: there is no real CDP WebSocket — the
+		root client is a :class:`~browser_use.browser.cdp_proxy.BidiCdpProxy`
+		that exposes the identical cdp_use surface but translates each CDP
+		method into Playwright calls (Phase-5 facade). Returning it here is
+		the single wiring point that lets the ~731 raw ``cdp_client.send.*``
+		call sites run unmodified on Firefox.
+		"""
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			assert self._bidi_cdp_proxy is not None, 'BiDi CDP proxy not initialized - browser may not be connected yet'
+			return self._bidi_cdp_proxy  # type: ignore[return-value]
 		assert self._cdp_client_root is not None, 'CDP client not initialized - browser may not be connected yet'
 		return self._cdp_client_root
+
+	async def get_adapter(self, target_id: 'TargetID | None' = None) -> 'Any':
+		"""Return a :class:`BrowserAdapter` for the current (or specified)
+		target. Dispatches by connection backend:
+
+		  - ``cdp``: build a :class:`CdpBrowserAdapter` pinned to the
+		    target's CDP session. If ``target_id`` is None we use the
+		    focused page target.
+		  - ``bidi``: return a :class:`PlaywrightBrowserAdapter` wrapping
+		    the connection's current page. ``target_id`` is ignored on
+		    the BiDi backend (single-tab posture today; multi-tab via
+		    BiDi session-manager analog comes later).
+
+		Watchdogs that have an adapter-grade equivalent for their CDP
+		ops use this method to stay backend-portable. Watchdogs whose
+		operations are CDP-shaped continue using
+		:meth:`get_or_create_cdp_session` directly and gracefully no-op
+		on the BiDi backend.
+		"""
+		from browser_use.browser.adapter import CdpBrowserAdapter, PlaywrightBrowserAdapter
+
+		# BiDi backend — return the Playwright adapter wrapping the
+		# connection's current page. No notion of target_id on this side
+		# yet; single-page posture documented in
+		# :class:`BidiBrowserConnection`.
+		if self._connection is not None and self._connection.backend == 'bidi':
+			return PlaywrightBrowserAdapter(self._connection.current_page)
+
+		# CDP backend (default).
+		if target_id is None:
+			focused = self.get_focused_target()
+			if focused is not None:
+				target_id = focused.target_id
+			else:
+				# Fall back to the last available page target — same
+				# heuristic the screenshot watchdog uses today.
+				pages = self.get_page_targets()
+				if not pages:
+					raise RuntimeError('get_adapter(): no page targets available')
+				target_id = pages[-1].target_id
+		return await CdpBrowserAdapter.for_target(self, target_id, focus=False)
 
 	async def new_page(self, url: str | None = None) -> 'Page':
 		"""Create a new page (tab)."""
@@ -1485,6 +1600,20 @@ class BrowserSession(BaseModel):
 		Raises:
 			ValueError: If target doesn't exist or session is not available.
 		"""
+		# BiDi (Firefox) path: there is no CDP target pool / SessionManager /
+		# attach-event machinery. Hand back a synthetic CDPSession bound to the
+		# BidiCdpProxy + the single synthetic target/session id. The CDP-shaped
+		# callers (CdpBrowserAdapter, dom/service) then drive Playwright through
+		# the proxy unchanged. (Phase-5 OBSERVE wiring.)
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			from browser_use.browser.cdp_proxy import _SYNTHETIC_SESSION_ID, _SYNTHETIC_TARGET_ID
+
+			return CDPSession(
+				cdp_client=self._bidi_cdp_proxy,  # type: ignore[arg-type]
+				target_id=cast('TargetID', _SYNTHETIC_TARGET_ID),
+				session_id=cast('SessionID', _SYNTHETIC_SESSION_ID),
+			)
+
 		assert self._cdp_client_root is not None, 'Root CDP client not initialized'
 		assert self.session_manager is not None, 'SessionManager not initialized'
 
@@ -1684,6 +1813,15 @@ class BrowserSession(BaseModel):
 			self.logger.debug('Watchdogs already attached, skipping duplicate attachment')
 			return
 
+		# On the Firefox/BiDi backend the CDP-centric "ambient" watchdogs are
+		# either unsupported or actively harmful (e.g. AboutBlankWatchdog spawns
+		# a fresh about:blank page that the agent then observes instead of the
+		# real page; DownloadsWatchdog/PermissionsWatchdog throw on the missing
+		# CDP target pool). Attach ONLY the agent-loop-essential watchdogs:
+		# DOM (observe), DefaultAction (act), Screenshot (DOM depends on it),
+		# LocalBrowser (launch). Gate on browser_type — _connection isn't built
+		# yet at attach time (connect() runs after attach_all_watchdogs()).
+		from browser_use.browser.profile import BrowserType
 		from browser_use.browser.watchdogs.aboutblank_watchdog import AboutBlankWatchdog
 		from browser_use.browser.watchdogs.captcha_watchdog import CaptchaWatchdog
 
@@ -1700,6 +1838,8 @@ class BrowserSession(BaseModel):
 		from browser_use.browser.watchdogs.security_watchdog import SecurityWatchdog
 		from browser_use.browser.watchdogs.storage_state_watchdog import StorageStateWatchdog
 
+		_bidi = self.browser_profile.browser_type == BrowserType.FIREFOX
+
 		# Initialize CrashWatchdog
 		# CrashWatchdog.model_rebuild()
 		# self._crash_watchdog = CrashWatchdog(event_bus=self.event_bus, browser_session=self)
@@ -1715,7 +1855,8 @@ class BrowserSession(BaseModel):
 		# self.event_bus.on(TabClosedEvent, self._downloads_watchdog.on_TabClosedEvent)
 		# self.event_bus.on(BrowserStoppedEvent, self._downloads_watchdog.on_BrowserStoppedEvent)
 		# self.event_bus.on(NavigationCompleteEvent, self._downloads_watchdog.on_NavigationCompleteEvent)
-		self._downloads_watchdog.attach_to_session()
+		if not _bidi:
+			self._downloads_watchdog.attach_to_session()
 		if self.browser_profile.auto_download_pdfs:
 			self.logger.debug('📄 PDF auto-download enabled for this session')
 
@@ -1734,7 +1875,8 @@ class BrowserSession(BaseModel):
 				auto_save_interval=60.0,  # 1 minute instead of 30 seconds
 				save_on_change=False,  # Only save on shutdown by default
 			)
-			self._storage_state_watchdog.attach_to_session()
+			if not _bidi:
+				self._storage_state_watchdog.attach_to_session()
 			self.logger.debug(
 				f'🍪 StorageStateWatchdog enabled (storage_state: {bool(self.browser_profile.storage_state)}, user_data_dir: {bool(self.browser_profile.user_data_dir)})'
 			)
@@ -1754,7 +1896,8 @@ class BrowserSession(BaseModel):
 		self._security_watchdog = SecurityWatchdog(event_bus=self.event_bus, browser_session=self)
 		# Core navigation is now handled in BrowserSession directly
 		# SecurityWatchdog only handles security policy enforcement
-		self._security_watchdog.attach_to_session()
+		if not _bidi:
+			self._security_watchdog.attach_to_session()
 
 		# Initialize AboutBlankWatchdog (handles about:blank pages and DVD loading animation on first load)
 		AboutBlankWatchdog.model_rebuild()
@@ -1763,20 +1906,23 @@ class BrowserSession(BaseModel):
 		# self.event_bus.on(BrowserStoppedEvent, self._aboutblank_watchdog.on_BrowserStoppedEvent)
 		# self.event_bus.on(TabCreatedEvent, self._aboutblank_watchdog.on_TabCreatedEvent)
 		# self.event_bus.on(TabClosedEvent, self._aboutblank_watchdog.on_TabClosedEvent)
-		self._aboutblank_watchdog.attach_to_session()
+		if not _bidi:
+			self._aboutblank_watchdog.attach_to_session()
 
 		# Initialize PopupsWatchdog (handles accepting and dismissing JS dialogs, alerts, confirm, onbeforeunload, etc.)
 		PopupsWatchdog.model_rebuild()
 		self._popups_watchdog = PopupsWatchdog(event_bus=self.event_bus, browser_session=self)
 		# self.event_bus.on(TabCreatedEvent, self._popups_watchdog.on_TabCreatedEvent)
 		# self.event_bus.on(DialogCloseEvent, self._popups_watchdog.on_DialogCloseEvent)
-		self._popups_watchdog.attach_to_session()
+		if not _bidi:
+			self._popups_watchdog.attach_to_session()
 
 		# Initialize PermissionsWatchdog (handles granting and revoking browser permissions like clipboard, microphone, camera, etc.)
 		PermissionsWatchdog.model_rebuild()
 		self._permissions_watchdog = PermissionsWatchdog(event_bus=self.event_bus, browser_session=self)
 		# self.event_bus.on(BrowserConnectedEvent, self._permissions_watchdog.on_BrowserConnectedEvent)
-		self._permissions_watchdog.attach_to_session()
+		if not _bidi:
+			self._permissions_watchdog.attach_to_session()
 
 		# Initialize DefaultActionWatchdog (handles all default actions like click, type, scroll, go back, go forward, refresh, wait, send keys, upload file, scroll to text, etc.)
 		DefaultActionWatchdog.model_rebuild()
@@ -1811,13 +1957,15 @@ class BrowserSession(BaseModel):
 		# Initialize RecordingWatchdog (handles video recording)
 		RecordingWatchdog.model_rebuild()
 		self._recording_watchdog = RecordingWatchdog(event_bus=self.event_bus, browser_session=self)
-		self._recording_watchdog.attach_to_session()
+		if not _bidi:
+			self._recording_watchdog.attach_to_session()
 
 		# Initialize HarRecordingWatchdog if record_har_path is configured (handles HTTPS HAR capture)
 		if self.browser_profile.record_har_path:
 			HarRecordingWatchdog.model_rebuild()
 			self._har_recording_watchdog = HarRecordingWatchdog(event_bus=self.event_bus, browser_session=self)
-			self._har_recording_watchdog.attach_to_session()
+			if not _bidi:
+				self._har_recording_watchdog.attach_to_session()
 
 		# Initialize CaptchaWatchdog (listens for captcha solver events from the browser proxy)
 		if self.browser_profile.captcha_solver:
@@ -1828,11 +1976,84 @@ class BrowserSession(BaseModel):
 		# Mark watchdogs as attached to prevent duplicate attachment
 		self._watchdogs_attached = True
 
+	async def _connect_bidi(self, cdp_url: str | None = None) -> None:
+		"""Firefox/Camoufox bring-up: a remote ws endpoint, or a local launch.
+
+		A ws endpoint is honoured when given, so a remote Camoufox (a pod serving
+		Playwright) still works. Otherwise the browser is launched here, in-process,
+		via the camoufox package — which is what carries the fingerprint, addons and
+		virtual display, and therefore what keeps a logged-in profile's clearance
+		cookies valid.
+		"""
+		from browser_use.browser.cdp_proxy import _SYNTHETIC_TARGET_ID, BidiCdpProxy
+		from browser_use.browser.connection import BidiBrowserConnection
+		from browser_use.browser.engine import FirefoxPlaywrightEngine
+
+		ws_url = cdp_url or self.cdp_url
+
+		if ws_url:
+			# Remote Camoufox. The proxy is per-context and applied client-side, so
+			# it works even over someone else's browser.
+			proxy = getattr(self.browser_profile, 'proxy', None)
+			proxy_dict = proxy.model_dump(exclude_none=True) if proxy is not None else None
+			self.browser_profile.cdp_url = ws_url
+			self._connection = BidiBrowserConnection(ws_endpoint=ws_url, proxy=proxy_dict or None)
+			source = f'remote {ws_url}'
+		else:
+			# Local launch. The engine returns a persistent BrowserContext when the
+			# profile names a user_data_dir, and a throwaway Browser otherwise; the
+			# connection accepts either. Its teardown closes the browser AND the
+			# Playwright runtime the engine started, so hand it over as on_stop —
+			# otherwise the node subprocess outlives the session.
+			handle = await FirefoxPlaywrightEngine.launch_local(self.browser_profile)
+			self._connection = BidiBrowserConnection(
+				browser=handle['browser'],
+				context=handle['context'],
+				playwright=handle['playwright'],
+				process=handle['process'],
+				on_stop=handle['teardown'],
+			)
+			source = 'local launch'
+
+		await self._connection.start()
+		# The facade: every raw `cdp_client.send.*` in the watchdogs and dom/service
+		# routes through this instead of a CDP WebSocket. `cdp_client` (the property)
+		# returns it whenever the backend is 'bidi'.
+		self._bidi_cdp_proxy = BidiCdpProxy(self._connection)
+		await self._bidi_cdp_proxy.start()
+		# Point agent focus at the single synthetic BiDi target so the nav/action
+		# guards (which check agent_focus_target_id) pass.
+		self.agent_focus_target_id = cast('TargetID', _SYNTHETIC_TARGET_ID)
+		self.logger.info(
+			f'🦊 Connected to Firefox/Camoufox over BiDi ({source}). CDP calls are '
+			'translated to Playwright; an unimplemented one raises '
+			'CdpMethodNotImplemented naming the method.'
+		)
+
 	async def connect(self, cdp_url: str | None = None) -> Self:
-		"""Connect to a remote chromium-based browser via CDP using cdp-use.
+		"""Bring up the browser control channel.
+
+		Dispatches by ``browser_profile.browser_type``:
+
+		  - CHROMIUM (default): CDP connect via cdp_use. Unchanged — every
+		    existing caller sees identical behaviour.
+		  - FIREFOX: Playwright BiDi. Either connects to a remote Camoufox
+		    (when ``cdp_url``/``profile.cdp_url`` names a Playwright ws
+		    endpoint) or launches one locally through
+		    :meth:`~browser_use.browser.engine.FirefoxPlaywrightEngine.launch_local`.
+		    The raw ``cdp_client.send.*`` call sites throughout the watchdogs
+		    then route through :class:`~browser_use.browser.cdp_proxy.BidiCdpProxy`,
+		    which translates them into Playwright.
 
 		This MUST succeed or the browser is unusable. Fails hard on any error.
 		"""
+		from browser_use.browser.profile import BrowserType
+
+		# Firefox / BiDi branch — short-circuits the CDP-specific setup. Everything
+		# below it is deliberately untouched so the Chromium path stays identical.
+		if self.browser_profile.browser_type == BrowserType.FIREFOX:
+			await self._connect_bidi(cdp_url)
+			return self
 
 		self.browser_profile.cdp_url = cdp_url or self.cdp_url
 		if not self.cdp_url:
@@ -1896,6 +2117,19 @@ class BrowserSession(BaseModel):
 			)
 			assert self._cdp_client_root is not None
 			await self._cdp_client_root.start()
+			# Mirror the CDP client behind the protocol-agnostic Connection
+			# (Phase 5a). _connection wraps the SAME client object — no new
+			# socket, no extra round-trips. As watchdogs migrate to
+			# `self.browser_session.connection.<op>` the cdp_client direct
+			# access can go away; until then both pointers coexist.
+			from browser_use.browser.connection import CdpBrowserConnection
+
+			self._connection = CdpBrowserConnection(self._cdp_client_root)
+			# Don't call self._connection.start() — it would re-start the
+			# CDPClient. The wrapper acknowledges the existing started
+			# state via its `_started=False` default, but we want
+			# `is_open` to reflect reality, so flip the flag manually.
+			self._connection._started = True  # type: ignore[attr-defined]
 
 			# Initialize event-driven session manager FIRST (before enabling autoAttach)
 			# SessionManager will:
@@ -2329,6 +2563,21 @@ class BrowserSession(BaseModel):
 		"""Get information about all open tabs using cached target data."""
 		tabs = []
 
+		# BiDi: single-tab posture — synthesize one TabInfo from the live page.
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			from browser_use.browser.cdp_proxy import _SYNTHETIC_TARGET_ID
+
+			try:
+				page = self._connection.current_page
+				url = page.url
+				try:
+					title = await page.title()
+				except Exception:
+					title = ''
+				return [TabInfo(target_id=cast('TargetID', _SYNTHETIC_TARGET_ID), url=url, title=title)]
+			except Exception:
+				return tabs
+
 		# Safety check - return empty list if browser not connected yet
 		if not self.session_manager:
 			return tabs
@@ -2405,6 +2654,12 @@ class BrowserSession(BaseModel):
 
 	async def get_current_page_url(self) -> str:
 		"""Get the URL of the current page."""
+		# BiDi: the live URL is on the Playwright page held by the connection.
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			try:
+				return self._connection.current_page.url
+			except Exception:
+				return 'about:blank'
 		if self.agent_focus_target_id:
 			target = self.session_manager.get_target(self.agent_focus_target_id)
 			return target.url
@@ -2412,6 +2667,11 @@ class BrowserSession(BaseModel):
 
 	async def get_current_page_title(self) -> str:
 		"""Get the title of the current page."""
+		if self._connection is not None and getattr(self._connection, 'backend', None) == 'bidi':
+			try:
+				return await self._connection.current_page.title()
+			except Exception:
+				return 'Unknown page title'
 		if self.agent_focus_target_id:
 			target = self.session_manager.get_target(self.agent_focus_target_id)
 			return target.title

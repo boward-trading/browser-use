@@ -35,6 +35,7 @@ Playwright. See ``ADAPTERS.md`` for the boundary doctrine.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
@@ -172,6 +173,7 @@ class BidiBrowserConnection(BrowserConnection):
 		ws_endpoint: str | None = None,
 		proxy: dict | None = None,
 		process: Any | None = None,
+		on_stop: Callable[[], Awaitable[None]] | None = None,
 	) -> None:
 		if browser is None and context is None and ws_endpoint is None:
 			raise ValueError(
@@ -191,6 +193,11 @@ class BidiBrowserConnection(BrowserConnection):
 		# Playwright does not surface a process for a persistent context, so this
 		# is often None even on a local launch.
 		self.process = process
+		# Teardown owned by whoever launched the browser. An injected browser or
+		# context means we did NOT start the Playwright runtime, so stop() must not
+		# stop it — but something has to, or the node subprocess leaks. The
+		# launcher passes its own teardown here and stop() calls it last.
+		self._on_stop = on_stop
 		# Per-CONTEXT proxy (geo / egress IP), applied CLIENT-SIDE: even when we
 		# connect to a remote Camoufox over the ws, Playwright Firefox honours a
 		# proxy passed to new_context(). dict form: {server, username, password, bypass}.
@@ -302,6 +309,12 @@ class BidiBrowserConnection(BrowserConnection):
 			except Exception:
 				pass
 			self._playwright = None
+		if self._on_stop is not None:
+			try:
+				await self._on_stop()
+			except Exception:  # noqa: BLE001 — best-effort teardown
+				pass
+			self._on_stop = None
 		self._started = False
 
 	@property
