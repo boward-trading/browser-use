@@ -44,7 +44,8 @@ milestone — methods in that domain currently raise NotImplemented.
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, cast
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, cast
 
 from cdp_use import CDPClient
 
@@ -118,7 +119,7 @@ class _FakeWs:
 	The real liveness source of truth on BiDi is
 	``BidiBrowserConnection.is_open`` (Playwright ``browser.is_connected()``)."""
 
-	def __init__(self, conn: 'BidiBrowserConnection') -> None:
+	def __init__(self, conn: BidiBrowserConnection) -> None:
 		self._conn = conn
 
 	@property
@@ -144,7 +145,7 @@ class BidiCdpProxy(CDPClient):
 	through :meth:`send_raw` → :attr:`_HANDLERS`.
 	"""
 
-	def __init__(self, connection: 'BidiBrowserConnection') -> None:
+	def __init__(self, connection: BidiBrowserConnection) -> None:
 		# NB: intentionally NOT calling super().__init__() — CDPClient's
 		# constructor would try to stand up a websocket client. We only need
 		# the type identity + the cdp_use typed libraries (built below).
@@ -168,12 +169,12 @@ class BidiCdpProxy(CDPClient):
 		self._nodes = NodeRegistry()
 		self._started = False
 		# Cached single-pass DOM scan (tree + flattened snapshot), keyed by URL.
-		self._scan_cache: Optional[dict] = None
-		self._scan_url: Optional[str] = None
+		self._scan_cache: dict | None = None
+		self._scan_url: str | None = None
 
 	# ── page access ─────────────────────────────────────────────────────
 	@property
-	def _page(self) -> 'PlaywrightPage':
+	def _page(self) -> PlaywrightPage:
 		"""The active Playwright page. Single-tab posture for now."""
 		return self._conn.current_page
 
@@ -191,7 +192,7 @@ class BidiCdpProxy(CDPClient):
 		self._started = False
 		self._nodes.clear()
 
-	async def emit_event(self, method: str, params: Any = None, session_id: Optional[str] = None) -> bool:
+	async def emit_event(self, method: str, params: Any = None, session_id: str | None = None) -> bool:
 		"""Push a synthetic CDP event into the registry (used to translate
 		Playwright events — framenavigated, dialog, etc. — into the CDP
 		events watchdogs subscribed to via ``.register``)."""
@@ -201,8 +202,8 @@ class BidiCdpProxy(CDPClient):
 	async def send_raw(
 		self,
 		method: str,
-		params: Optional[Any] = None,
-		session_id: Optional[str] = None,
+		params: Any | None = None,
+		session_id: str | None = None,
 	) -> dict[str, Any]:
 		handler = self._HANDLERS.get(method)
 		if handler is None:
@@ -221,11 +222,11 @@ class BidiCdpProxy(CDPClient):
 
 	# ── no-ops: enable/disable + observability domains that have no BiDi
 	#    analog. Returning {} keeps the call sites happy without effect. ──
-	async def _noop(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _noop(self, params: dict, session_id: str | None) -> dict:
 		return {}
 
 	# ── Browser ─────────────────────────────────────────────────────────
-	async def _Browser_getVersion(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Browser_getVersion(self, params: dict, session_id: str | None) -> dict:
 		ua = ''
 		try:
 			ua = await self._page.evaluate('navigator.userAgent')
@@ -250,7 +251,7 @@ class BidiCdpProxy(CDPClient):
 			'browserContextId': _SYNTHETIC_BROWSER_CONTEXT_ID,
 		}
 
-	async def _Target_getTargets(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Target_getTargets(self, params: dict, session_id: str | None) -> dict:
 		url = ''
 		try:
 			url = self._page.url
@@ -258,7 +259,7 @@ class BidiCdpProxy(CDPClient):
 			pass
 		return {'targetInfos': [self._target_info(url)]}
 
-	async def _Target_createTarget(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Target_createTarget(self, params: dict, session_id: str | None) -> dict:
 		# Single-tab posture: navigate the existing page if a url was given,
 		# rather than opening a real new target. Multi-tab is a later milestone.
 		url = params.get('url') or 'about:blank'
@@ -270,7 +271,7 @@ class BidiCdpProxy(CDPClient):
 			self._invalidate_scan()
 		return {'targetId': _SYNTHETIC_TARGET_ID}
 
-	async def _Target_attachToTarget(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Target_attachToTarget(self, params: dict, session_id: str | None) -> dict:
 		# Emit the attachedToTarget event some startup paths wait on, then
 		# return the synthetic session id (flatten=True style).
 		await self.emit_event(
@@ -283,10 +284,10 @@ class BidiCdpProxy(CDPClient):
 		)
 		return {'sessionId': _SYNTHETIC_SESSION_ID}
 
-	async def _Target_closeTarget(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Target_closeTarget(self, params: dict, session_id: str | None) -> dict:
 		return {'success': True}
 
-	async def _Target_activateTarget(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Target_activateTarget(self, params: dict, session_id: str | None) -> dict:
 		try:
 			await self._page.bring_to_front()
 		except Exception:
@@ -294,7 +295,7 @@ class BidiCdpProxy(CDPClient):
 		return {}
 
 	# ── Page ────────────────────────────────────────────────────────────
-	async def _Page_navigate(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Page_navigate(self, params: dict, session_id: str | None) -> dict:
 		# Wait only for DOMContentLoaded, NOT the full 'load' event: through a
 		# remote Camoufox + proxy the 'load' event (all images/subresources)
 		# frequently times out, leaving the page blank and the agent stuck in a
@@ -310,12 +311,12 @@ class BidiCdpProxy(CDPClient):
 		self._invalidate_scan()
 		return {'frameId': _SYNTHETIC_FRAME_ID, 'loaderId': 'BIDI-LOADER-0', 'errorText': err}
 
-	async def _Page_reload(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Page_reload(self, params: dict, session_id: str | None) -> dict:
 		await self._adapter().reload()
 		self._invalidate_scan()
 		return {}
 
-	async def _Page_getFrameTree(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Page_getFrameTree(self, params: dict, session_id: str | None) -> dict:
 		return {
 			'frameTree': {
 				'frame': {
@@ -329,7 +330,7 @@ class BidiCdpProxy(CDPClient):
 			}
 		}
 
-	async def _Page_getNavigationHistory(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Page_getNavigationHistory(self, params: dict, session_id: str | None) -> dict:
 		return {
 			'currentIndex': 0,
 			'entries': [
@@ -337,7 +338,7 @@ class BidiCdpProxy(CDPClient):
 			],
 		}
 
-	async def _Page_captureScreenshot(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Page_captureScreenshot(self, params: dict, session_id: str | None) -> dict:
 		import base64
 
 		full = (params.get('captureBeyondViewport') is True) or False
@@ -345,7 +346,7 @@ class BidiCdpProxy(CDPClient):
 		data = png if isinstance(png, (bytes, bytearray)) else b''
 		return {'data': base64.b64encode(bytes(data)).decode('ascii')}
 
-	async def _Page_getLayoutMetrics(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Page_getLayoutMetrics(self, params: dict, session_id: str | None) -> dict:
 		m = await self._adapter().viewport_metrics()
 		w = int(m.get('width', 0))
 		h = int(m.get('height', 0))
@@ -364,7 +365,7 @@ class BidiCdpProxy(CDPClient):
 		}
 
 	# ── Runtime ─────────────────────────────────────────────────────────
-	async def _Runtime_evaluate(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Runtime_evaluate(self, params: dict, session_id: str | None) -> dict:
 		expr = params.get('expression', '')
 		by_value = params.get('returnByValue', True)
 		try:
@@ -390,7 +391,7 @@ class BidiCdpProxy(CDPClient):
 		except Exception as e:  # surface as a CDP exceptionDetails-ish payload
 			return {'result': {'type': 'undefined'}, 'exceptionDetails': {'text': str(e)}}
 
-	async def _Runtime_getProperties(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Runtime_getProperties(self, params: dict, session_id: str | None) -> dict:
 		oid = params.get('objectId')
 		handle = self._nodes.handle_for_object(oid) if oid else None
 		if handle is None:
@@ -404,7 +405,7 @@ class BidiCdpProxy(CDPClient):
 			)
 		return {'result': out}
 
-	async def _Runtime_releaseObject(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Runtime_releaseObject(self, params: dict, session_id: str | None) -> dict:
 		oid = params.get('objectId')
 		handle = self._nodes.handle_for_object(oid) if oid else None
 		if handle is not None:
@@ -439,15 +440,15 @@ class BidiCdpProxy(CDPClient):
 		self._scan_cache = None
 		self._scan_url = None
 
-	async def _DOM_getDocument(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _DOM_getDocument(self, params: dict, session_id: str | None) -> dict:
 		scan = await self._dom_scan()
 		return {'root': scan['tree']}
 
-	async def _DOMSnapshot_captureSnapshot(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _DOMSnapshot_captureSnapshot(self, params: dict, session_id: str | None) -> dict:
 		scan = await self._dom_scan()
 		return scan['snapshot']
 
-	async def _DOM_describeNode(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _DOM_describeNode(self, params: dict, session_id: str | None) -> dict:
 		oid = params.get('objectId')
 		backend = params.get('backendNodeId')
 		buid = None
@@ -465,13 +466,13 @@ class BidiCdpProxy(CDPClient):
 		return {'node': {'backendNodeId': buid, 'nodeId': buid}}
 
 	# ── Accessibility ───────────────────────────────────────────────────
-	async def _Accessibility_getFullAXTree(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Accessibility_getFullAXTree(self, params: dict, session_id: str | None) -> dict:
 		# v1: no AX merge — elements are still discovered via DOM + snapshot.
 		# AX enrichment (role/name keyed by backendNodeId) is a later refinement.
 		return {'nodes': []}
 
 	# ── Input ───────────────────────────────────────────────────────────
-	async def _Input_dispatchMouseEvent(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Input_dispatchMouseEvent(self, params: dict, session_id: str | None) -> dict:
 		x = float(params.get('x', 0))
 		y = float(params.get('y', 0))
 		etype = params.get('type')
@@ -489,7 +490,7 @@ class BidiCdpProxy(CDPClient):
 			await mouse.wheel(float(params.get('deltaX', 0)), float(params.get('deltaY', 0)))
 		return {}
 
-	async def _Input_dispatchKeyEvent(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Input_dispatchKeyEvent(self, params: dict, session_id: str | None) -> dict:
 		etype = params.get('type')
 		kb = self._page.keyboard
 		key = params.get('key') or params.get('text') or ''
@@ -505,7 +506,7 @@ class BidiCdpProxy(CDPClient):
 				await kb.insert_text(text)
 		return {}
 
-	async def _Input_insertText(self, params: dict, session_id: Optional[str]) -> dict:
+	async def _Input_insertText(self, params: dict, session_id: str | None) -> dict:
 		await self._page.keyboard.insert_text(params.get('text', ''))
 		return {}
 
@@ -520,7 +521,7 @@ class BidiCdpProxy(CDPClient):
 	# method string -> handler. NOTE: enable/disable + interception domains
 	# are no-ops on BiDi; DOM-identity domain intentionally absent (raises
 	# CdpMethodNotImplemented) until the OBSERVE milestone lands.
-	_HANDLERS: dict[str, Callable[['BidiCdpProxy', dict, Optional[str]], Awaitable[dict]]] = {
+	_HANDLERS: dict[str, Callable[[BidiCdpProxy, dict, str | None], Awaitable[dict]]] = {
 		# enable/disable no-ops
 		'Page.enable': _noop,
 		'Page.disable': _noop,

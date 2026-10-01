@@ -114,7 +114,7 @@ def _rebuild_dataclass(cls: Any, data: Mapping[str, Any]) -> Any:
 	# so resolve the real types once rather than string-matching them.
 	try:
 		hints = get_type_hints(cls)
-	except Exception:  # noqa: BLE001 — unresolvable hints just mean no nesting
+	except Exception:  # — unresolvable hints just mean no nesting
 		hints = {}
 
 	kwargs: dict[str, Any] = {}
@@ -288,7 +288,7 @@ class FirefoxPlaywrightEngine(BrowserEngine):
 			):
 				try:
 					await step()
-				except Exception:  # noqa: BLE001 — best-effort teardown
+				except Exception:  # — best-effort teardown
 					pass
 
 		return {

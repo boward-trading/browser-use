@@ -119,7 +119,7 @@ async def playwright_page():
 		try:
 			browser = await launch()
 			break
-		except Exception as e:  # noqa: BLE001 — any launch failure means "try the next backend"
+		except Exception as e:  # — any launch failure means "try the next backend"
 			failures.append(f'{launch.__name__.removeprefix("_launch_")}: {e}')
 	if browser is None:
 		await pw.stop()
@@ -133,7 +133,7 @@ async def playwright_page():
 		for step in (page.close, context.close, browser.close, pw.stop):
 			try:
 				await step()
-			except Exception:  # noqa: BLE001 — teardown is best-effort
+			except Exception:  # — teardown is best-effort
 				pass
 
 

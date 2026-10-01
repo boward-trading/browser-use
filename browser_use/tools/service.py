@@ -1818,9 +1818,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 
 			return ActionResult(extracted_content=result, long_term_memory=result)
 
-		@self.registry.action(
-			'Append content to an existing file. Creates the file if it does not exist.'
-		)
+		@self.registry.action('Append content to an existing file. Creates the file if it does not exist.')
 		async def append_file(file_name: str, content: str, file_system: FileSystem):
 			result = await file_system.append_file(file_name, content + '\n')
 			resolved_name, _ = file_system._resolve_filename(file_name)

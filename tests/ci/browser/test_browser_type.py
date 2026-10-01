@@ -36,7 +36,9 @@ def test_browser_type_firefox_accepted() -> None:
 	profile = BrowserProfile(browser_type=BrowserType.FIREFOX)
 	assert profile.browser_type == BrowserType.FIREFOX
 	# String form must round-trip identically (Enum's __str__ via str inheritance).
-	assert BrowserProfile(browser_type='firefox').browser_type == BrowserType.FIREFOX
+	# The literal is the point of this assertion — pydantic coerces it — so the
+	# annotation mismatch is expected here rather than a mistake to fix.
+	assert BrowserProfile(browser_type='firefox').browser_type == BrowserType.FIREFOX  # type: ignore[arg-type]
 
 
 def test_browser_type_chromium_keeps_channel() -> None:

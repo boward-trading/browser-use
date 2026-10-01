@@ -234,7 +234,9 @@ class DomService:
 
 		try:
 			adapter = await CdpBrowserAdapter.for_target(
-				self.browser_session, target_id, focus=False,
+				self.browser_session,
+				target_id,
+				focus=False,
 			)
 			return await adapter.device_pixel_ratio()
 		except Exception as e:
@@ -364,7 +366,9 @@ class DomService:
 		from browser_use.browser.adapter import CdpBrowserAdapter
 
 		adapter = await CdpBrowserAdapter.for_target(
-			self.browser_session, target_id, focus=False,
+			self.browser_session,
+			target_id,
+			focus=False,
 		)
 		# Cast to the CDP-typed return — the adapter's CDP backend
 		# returns the native getFullAXTree shape unchanged.
@@ -395,8 +399,9 @@ class DomService:
 		start_iframe_scroll = time.time()
 		iframe_scroll_positions = {}
 		try:
-			iframe_scroll_positions = await adapter.evaluate(
-				"""
+			iframe_scroll_positions = (
+				await adapter.evaluate(
+					"""
 				(() => {
 					const scrollData = {};
 					const iframes = document.querySelectorAll('iframe');
@@ -416,7 +421,9 @@ class DomService:
 					return scrollData;
 				})()
 				"""
-			) or {}
+				)
+				or {}
+			)
 			for idx, scroll_data in iframe_scroll_positions.items():
 				self.logger.debug(
 					f'🔍 DEBUG: Iframe {idx} actual scroll position - scrollTop={scroll_data.get("scrollTop", 0)}, scrollLeft={scroll_data.get("scrollLeft", 0)}'
@@ -1390,8 +1397,7 @@ class DomService:
 		if not walk or not walk.get('nodes'):
 			# Empty page or eval failure — degrade to an empty tree the
 			# Agent serializer can survive on.
-			walk = {'nodes': [], 'url': '', 'title': '', 'device_pixel_ratio': dpr,
-			        'scroll_x': 0, 'scroll_y': 0}
+			walk = {'nodes': [], 'url': '', 'title': '', 'device_pixel_ratio': dpr, 'scroll_x': 0, 'scroll_y': 0}
 
 		start_build = time.time()
 
@@ -1400,8 +1406,11 @@ class DomService:
 		for raw in walk['nodes']:
 			node_id = raw['node_id']
 			rect = raw.get('rect')
-			abs_rect = DOMRect(x=float(rect['x']), y=float(rect['y']),
-			                   width=float(rect['width']), height=float(rect['height'])) if rect else None
+			abs_rect = (
+				DOMRect(x=float(rect['x']), y=float(rect['y']), width=float(rect['width']), height=float(rect['height']))
+				if rect
+				else None
+			)
 			snapshot_node = EnhancedSnapshotNode(
 				is_clickable=bool(raw.get('clickable')),
 				cursor_style=(raw.get('styles') or {}).get('cursor'),
@@ -1452,16 +1461,30 @@ class DomService:
 
 		if root is None:
 			# Defensive fallback — empty document.
-			root = next(iter(shells.values()), EnhancedDOMTreeNode(
-				node_id=1, backend_node_id=1,
-				node_type=NodeType.ELEMENT_NODE,
-				node_name='HTML', node_value='', attributes={},
-				is_scrollable=None, is_visible=False, absolute_position=None,
-				target_id='bidi-page', frame_id=None, session_id=None,
-				content_document=None, shadow_root_type=None, shadow_roots=None,
-				parent_node=None, children_nodes=None,
-				ax_node=None, snapshot_node=None,
-			))
+			root = next(
+				iter(shells.values()),
+				EnhancedDOMTreeNode(
+					node_id=1,
+					backend_node_id=1,
+					node_type=NodeType.ELEMENT_NODE,
+					node_name='HTML',
+					node_value='',
+					attributes={},
+					is_scrollable=None,
+					is_visible=False,
+					absolute_position=None,
+					target_id='bidi-page',
+					frame_id=None,
+					session_id=None,
+					content_document=None,
+					shadow_root_type=None,
+					shadow_roots=None,
+					parent_node=None,
+					children_nodes=None,
+					ax_node=None,
+					snapshot_node=None,
+				),
+			)
 
 		timing_info['bidi_build_tree_ms'] = (time.time() - start_build) * 1000
 
@@ -1469,7 +1492,8 @@ class DomService:
 		# so the SerializedDOMState shape stays consistent for the Agent.
 		start_serialize = time.time()
 		serialized_dom_state, serializer_timing = DOMTreeSerializer(
-			root, previous_cached_state,
+			root,
+			previous_cached_state,
 			paint_order_filtering=self.paint_order_filtering,
 			session_id=self.browser_session.id,
 		).serialize_accessible_elements()

@@ -20,6 +20,7 @@ asserted without a browser, and one opt-in test does a real launch.
 import ast
 import inspect
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -29,7 +30,7 @@ from browser_use.browser.engine import (
 	FirefoxPlaywrightEngine,
 	get_engine,
 )
-from browser_use.browser.profile import BrowserProfile, BrowserType
+from browser_use.browser.profile import BrowserProfile, BrowserType, ProxySettings
 
 # ── Regression guards on the Node-only API ───────────────────────────────────
 
@@ -100,7 +101,7 @@ def test_build_launch_kwargs_passes_the_proxy_through():
 	profile = BrowserProfile(
 		browser_type=BrowserType.FIREFOX,
 		headless=True,
-		proxy={'server': 'http://p:8080', 'username': 'u', 'password': 'pw'},
+		proxy=ProxySettings(server='http://p:8080', username='u', password='pw'),
 	)
 	kwargs = FirefoxPlaywrightEngine.build_launch_kwargs(profile)
 	assert kwargs['proxy'] == {'server': 'http://p:8080', 'username': 'u', 'password': 'pw'}
@@ -157,7 +158,7 @@ async def test_launch_local_brings_up_a_live_camoufox_page(tmp_path):
 	)
 	try:
 		handle = await FirefoxPlaywrightEngine.launch_local(profile)
-	except Exception as e:  # noqa: BLE001 — a missing binary must skip, not fail
+	except Exception as e:  # — a missing binary must skip, not fail
 		pytest.skip(f'camoufox could not launch: {e}')
 
 	try:
@@ -188,7 +189,7 @@ async def test_bidi_connection_accepts_an_injected_context(tmp_path):
 	)
 	try:
 		handle = await FirefoxPlaywrightEngine.launch_local(profile)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:
 		pytest.skip(f'camoufox could not launch: {e}')
 
 	conn = BidiBrowserConnection(context=handle['context'], playwright=handle['playwright'], process=handle['process'])
@@ -238,12 +239,14 @@ def test_a_fingerprint_dict_is_rebuilt_for_camoufox():
 		headless=True,
 		camoufox_options={'fingerprint': _pinned_fingerprint_dict()},
 	)
-	rebuilt = FirefoxPlaywrightEngine.build_launch_kwargs(profile)['fingerprint']
+	from browserforge.fingerprints import Fingerprint
+
+	rebuilt = cast(Fingerprint, FirefoxPlaywrightEngine.build_launch_kwargs(profile)['fingerprint'])
 
 	assert dataclasses.is_dataclass(rebuilt) and not isinstance(rebuilt, type)
 	assert 'firefox' in rebuilt.navigator.userAgent.lower()
 	# Nested dataclasses must be rebuilt too, or asdict() produces junk.
-	assert dataclasses.is_dataclass(rebuilt.screen) and not isinstance(rebuilt.screen, type)
+	assert dataclasses.is_dataclass(rebuilt.screen)
 
 
 def test_an_already_built_fingerprint_is_left_alone():
@@ -292,7 +295,7 @@ async def test_launch_local_accepts_a_pinned_fingerprint(tmp_path):
 	)
 	try:
 		handle = await FirefoxPlaywrightEngine.launch_local(profile)
-	except Exception as e:  # noqa: BLE001
+	except Exception as e:
 		pytest.skip(f'camoufox could not launch: {e}')
 	try:
 		page = handle['context'].pages[0] if handle['context'].pages else await handle['context'].new_page()

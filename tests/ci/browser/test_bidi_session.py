@@ -11,7 +11,7 @@ so the suite stays green on a CDP-only environment.
 import pytest
 
 from browser_use.browser.events import ClickElementEvent, TypeTextEvent
-from browser_use.browser.profile import BrowserProfile
+from browser_use.browser.profile import BrowserProfile, BrowserType
 from browser_use.browser.session import BrowserSession
 
 PAGE = (
@@ -31,14 +31,14 @@ async def bidi_session(tmp_path):
 	pytest.importorskip('playwright.async_api')
 
 	profile = BrowserProfile(
-		browser_type='firefox',
+		browser_type=BrowserType.FIREFOX,
 		headless=True,
 		user_data_dir=str(tmp_path / 'camoufox-profile'),
 	)
 	session = BrowserSession(browser_profile=profile)
 	try:
 		await session.start()
-	except Exception as e:  # noqa: BLE001 — a missing binary must skip, not fail
+	except Exception as e:  # — a missing binary must skip, not fail
 		await session.kill()
 		pytest.skip(f'camoufox session could not start: {e}')
 	try:

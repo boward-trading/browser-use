@@ -312,7 +312,7 @@ class BidiBrowserConnection(BrowserConnection):
 		if self._on_stop is not None:
 			try:
 				await self._on_stop()
-			except Exception:  # noqa: BLE001 — best-effort teardown
+			except Exception:  # — best-effort teardown
 				pass
 			self._on_stop = None
 		self._started = False
@@ -330,7 +330,7 @@ class BidiBrowserConnection(BrowserConnection):
 			# clears _context, and a context whose browser died raises on use.
 			try:
 				return self._page is not None and not self._page.is_closed()
-			except Exception:  # noqa: BLE001 — a dead context/page means not open
+			except Exception:  # — a dead context/page means not open
 				return False
 		return False
 
