@@ -848,10 +848,15 @@ class DOMWatchdog(BaseWatchdog):
 			info = node.scroll_info
 			if info and (best is None or info['content_below'] > best['content_below']):
 				best = info
-			for child in (node.children_nodes or []):
+			for child in node.children_nodes or []:
 				_walk(child)
 
-		_walk(self.enhanced_dom_tree)
+		root = self.enhanced_dom_tree
+		if root is None:
+			# No tree built yet (or it was invalidated) — no container to report,
+			# and walking None would raise inside _walk.
+			return None
+		_walk(root)
 		return best
 
 	# ========== Public Helper Methods ==========

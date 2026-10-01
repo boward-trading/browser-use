@@ -375,7 +375,9 @@ class BrowserKillEvent(BaseEvent):
 class BrowserConnectedEvent(BaseEvent):
 	"""Browser has started/connected."""
 
-	cdp_url: str
+	# None on the Firefox/BiDi backend when the browser was launched in-process:
+	# Playwright drives it through a live object, so there is no endpoint to name.
+	cdp_url: str | None
 
 	event_timeout: float | None = Field(default_factory=lambda: _get_timeout('TIMEOUT_BrowserConnectedEvent', 30.0))  # seconds
 

@@ -68,6 +68,12 @@ core = [
 ]
 aws = ["boto3==1.42.37"]
 oci = ["oci==2.166.0"]
+# The Firefox/Camoufox engine (browser_use.browser.engine, .connection, .cdp_proxy).
+# Pinned to the combo edwin-computer-use runs: camoufox's Firefox binary is
+# version-specific, and playwright >=1.61 breaks Browser.new_page against it
+# (setDefaultViewport protocol error). Keep in step with
+# external/edwin/pyproject.toml.
+camoufox = ["camoufox==0.5.6", "playwright==1.58.0"]
 video = ["imageio[ffmpeg]==2.37.2", "numpy==2.4.1"]
 examples = [
     "agentmail==0.0.59",
@@ -113,7 +119,7 @@ build-backend = "hatchling.build"
 
 
 [tool.codespell]
-ignore-words-list = "bu,wit,dont,cant,wont,re-use,re-used,re-using,re-usable,thats,doesnt,doubleclick,finaly,finalY"
+ignore-words-list = "bu,buid,wit,dont,cant,wont,re-use,re-used,re-using,re-usable,thats,doesnt,doubleclick,finaly,finalY"
 skip = "*.json"
 
 [tool.ruff]
