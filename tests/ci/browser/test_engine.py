@@ -214,13 +214,46 @@ def test_bidi_connection_needs_one_of_browser_context_or_ws_endpoint():
 # ── camoufox_options has to survive a BrowserProfile round-trip ───────────────
 
 
+def _takes_fpgen() -> bool:
+	try:
+		from browser_use.browser.engine import camoufox_takes_fpgen
+
+		return camoufox_takes_fpgen()
+	except ImportError:
+		return False
+
+
 def _pinned_fingerprint_dict():
-	"""A camoufox fingerprint in the JSON form its own `dumps()` produces."""
+	"""A camoufox fingerprint in its serialisable form.
+
+	fpgen camoufox (0.5.9+) generates a plain dict; older camoufox generates a
+	browserforge dataclass whose own `dumps()` gives the JSON form.
+	"""
 	import json
 
 	from camoufox.fingerprints import generate_fingerprint
 
-	return json.loads(generate_fingerprint().dumps())
+	fingerprint = generate_fingerprint()
+	if isinstance(fingerprint, dict):
+		return fingerprint
+	return json.loads(fingerprint.dumps())
+
+
+def test_an_fpgen_fingerprint_dict_passes_through():
+	"""fpgen camoufox takes the dict itself; rebuilding it would break the launch."""
+	pytest.importorskip('camoufox')
+	if not _takes_fpgen():
+		pytest.skip('installed camoufox takes browserforge fingerprints')
+
+	fingerprint = _pinned_fingerprint_dict()
+	profile = BrowserProfile(
+		browser_type=BrowserType.FIREFOX,
+		headless=True,
+		camoufox_options={'fingerprint': fingerprint},
+	)
+	passed = FirefoxPlaywrightEngine.build_launch_kwargs(profile)['fingerprint']
+	assert isinstance(passed, dict)
+	assert passed['navigator']['userAgent'] == fingerprint['navigator']['userAgent']
 
 
 def test_a_fingerprint_dict_is_rebuilt_for_camoufox():
@@ -233,6 +266,9 @@ def test_a_fingerprint_dict_is_rebuilt_for_camoufox():
 	profile, and the engine rebuilds it at the camoufox boundary.
 	"""
 	import dataclasses
+
+	if _takes_fpgen():
+		pytest.skip('fpgen camoufox takes the dict as-is')
 
 	profile = BrowserProfile(
 		browser_type=BrowserType.FIREFOX,
@@ -274,7 +310,14 @@ def test_camoufox_options_survive_the_profile_merge():
 	merged = BrowserProfile(**original.model_dump(exclude_unset=True))
 
 	kwargs = FirefoxPlaywrightEngine.build_launch_kwargs(merged)
-	assert dataclasses.is_dataclass(kwargs['fingerprint']) and not isinstance(kwargs['fingerprint'], type)
+	if _takes_fpgen():
+		assert isinstance(kwargs['fingerprint'], dict)
+		assert (
+			kwargs['fingerprint']['navigator']['userAgent']
+			== original.camoufox_options['fingerprint']['navigator']['userAgent']
+		)
+	else:
+		assert dataclasses.is_dataclass(kwargs['fingerprint']) and not isinstance(kwargs['fingerprint'], type)
 	assert kwargs['humanize'] is True
 
 

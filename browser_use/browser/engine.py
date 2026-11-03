@@ -127,19 +127,33 @@ def _rebuild_dataclass(cls: Any, data: Mapping[str, Any]) -> Any:
 	return cls(**kwargs)
 
 
-def _as_camoufox_fingerprint(value: Any) -> Any:
-	"""Coerce a serialised fingerprint back into camoufox's dataclass.
+def camoufox_takes_fpgen() -> bool:
+	"""Whether the installed camoufox launches fpgen fingerprints (plain dicts).
 
-	camoufox calls ``dataclasses.asdict()`` on whatever it is given, so it needs a
-	real ``browserforge.fingerprints.Fingerprint``. A caller cannot hand one over
-	through :class:`~browser_use.browser.profile.BrowserProfile` though:
+	camoufox 0.5.9+ generates and accepts fpgen dicts; 0.5.6 and earlier take a
+	``browserforge.fingerprints.Fingerprint`` dataclass.
+	"""
+	from camoufox import fingerprints
+
+	return hasattr(fingerprints, 'from_fpgen')
+
+
+def _as_camoufox_fingerprint(value: Any) -> Any:
+	"""Coerce a serialised fingerprint into what the installed camoufox launches.
+
+	camoufox 0.5.9+ takes fpgen fingerprints, which are plain dicts already, so a
+	mapping passes through untouched.
+
+	Older camoufox calls ``dataclasses.asdict()`` on whatever it is given, so it
+	needs a real ``browserforge.fingerprints.Fingerprint``. A caller cannot hand
+	one over through :class:`~browser_use.browser.profile.BrowserProfile` though:
 	:class:`~browser_use.browser.session.BrowserSession` merges a profile via
 	``model_dump()``, which flattens any dataclass into a plain dict. So the
 	serialisable form is what crosses the profile boundary and gets rebuilt here.
 
 	An already-built Fingerprint passes through untouched.
 	"""
-	if not isinstance(value, Mapping):
+	if not isinstance(value, Mapping) or camoufox_takes_fpgen():
 		return value
 	from browserforge.fingerprints import Fingerprint
 

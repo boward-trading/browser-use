@@ -73,7 +73,7 @@ oci = ["oci==2.166.0"]
 # version-specific, and playwright >=1.61 breaks Browser.new_page against it
 # (setDefaultViewport protocol error). Keep in step with
 # external/edwin/pyproject.toml.
-camoufox = ["camoufox==0.5.6", "playwright==1.58.0"]
+camoufox = ["camoufox==0.5.9", "playwright==1.58.0"]
 video = ["imageio[ffmpeg]==2.37.2", "numpy==2.4.1"]
 examples = [
     "agentmail==0.0.59",
