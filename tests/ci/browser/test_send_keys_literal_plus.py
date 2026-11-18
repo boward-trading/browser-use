@@ -28,6 +28,10 @@ def make_watchdog(recorded_params, dispatched_keys) -> DefaultActionWatchdog:
 		logger=SimpleNamespace(info=lambda *args, **kwargs: None),
 		_dispatch_key_event=dispatch_key_event,
 	)
+	# The fork's camoufox layer routes on_SendKeysEvent through _is_bidi(); the fake session has no BiDi
+	# connection, so it takes the CDP path, _on_send_keys_cdp.
+	watchdog._is_bidi = DefaultActionWatchdog._is_bidi.__get__(watchdog)
+	watchdog._on_send_keys_cdp = DefaultActionWatchdog._on_send_keys_cdp.__get__(watchdog)
 	watchdog._get_char_modifiers_and_vk = DefaultActionWatchdog._get_char_modifiers_and_vk.__get__(watchdog)
 	watchdog._get_key_code_for_char = DefaultActionWatchdog._get_key_code_for_char.__get__(watchdog)
 	return cast(DefaultActionWatchdog, watchdog)
